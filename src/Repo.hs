@@ -1,5 +1,5 @@
 module Repo where
-
+    
 import Data.UUID as UU
 import Network.URI
 
@@ -41,3 +41,8 @@ emptyRepo = do
               nullURI)
             [])
           []
+
+readRepo :: String -> IO (Maybe Repository)
+readRepo repoPath = do 
+    let r = emptyRepo
+    return r
