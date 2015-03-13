@@ -1,7 +1,6 @@
 module Messages where
 
 import           Network.URI
-
 import           Text.XML.Light
 
 import qualified Data.ByteString.Lazy.Char8 as L
@@ -26,8 +25,7 @@ data Error = BadXml String
   | NoVersion
   | NoMessageType
   | BadMessageType String
-  | BrokenPublishElement
-  | BrokenWithdrawElement
+  | BrokenElement
   | NoURI
   | BadURI String
 
@@ -41,32 +39,33 @@ parseMessage xml = do
                         "reply" -> Right Reply
                         _       -> Left $ BadMessageType messageType
 
-    let publishPdus = map (\e -> 
-            case e of 
-                Element { elAttribs = attrs,  elContent = [Text CData { cdData = base64 }]} -> toPublish (lookupAttr (qname "uri") attrs) base64
-                _                                                                           -> Left BrokenPublishElement
-            ) $ findElements (qname "publish") doc
-
-    let withdrawPdus = map (\e -> 
-            case e of  
-                Element { elAttribs = attrs } -> toWithdraw $ lookupAttr (qname "uri") attrs
-                _                             -> Left BrokenWithdrawElement 
-            ) $ findElements (qname "withdraw") doc
-
-    pdus <- sequence $ publishPdus ++ withdrawPdus
+    pdus <- sequence $ map (\element -> 
+            case element of 
+                Element { elName = QName { qName = "publish" },
+                          elAttribs = attrs,  
+                          elContent = [Text CData { cdData = base64 }]
+                        } -> toPublishPdu (lookupAttr (qname "uri") attrs) base64
+                        
+                Element { elName = QName { qName = "withdraw" }, 
+                          elAttribs = attrs 
+                        } -> toWithdrawPdu $ lookupAttr (qname "uri") attrs
+                        
+                _         -> Left BrokenElement 
+            ) $ elChildren doc
+            
     return $ Message (Version (read version)) mType pdus
     where
-        qname n = QName { qName = n, qURI = Nothing, qPrefix = Nothing }
+        qname name = QName { qName = name, qURI = Nothing, qPrefix = Nothing }
 
-        toPublish :: Maybe String -> String -> Either Error Pdu
-        toPublish Nothing _ = Left NoURI
-        toPublish (Just u) base64 = do
+        toPublishPdu :: Maybe String -> String -> Either Error Pdu
+        toPublishPdu Nothing _ = Left NoURI
+        toPublishPdu (Just u) base64 = do
             uri <- maybeToEither (BadURI u) (parseURI u)
             return $ Publish uri (Base64 base64)
 
-        toWithdraw :: Maybe String -> Either Error Pdu
-        toWithdraw Nothing = Left NoURI
-        toWithdraw (Just u) = do
+        toWithdrawPdu :: Maybe String -> Either Error Pdu
+        toWithdrawPdu Nothing = Left NoURI
+        toWithdrawPdu (Just u) = do
             uri <- maybeToEither (BadURI u) (parseURI u)
             return $ Withdraw uri
 
