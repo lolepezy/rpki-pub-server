@@ -1,21 +1,13 @@
-{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 
 import System.Exit
 
-import           Control.Concurrent
 import           Control.Concurrent.STM
-import           Control.Concurrent.STM.TVar
 import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Data.Maybe
-import           Happstack.Server            (Method (POST), Response,
-                                              ServerPart, ServerPartT, askRq,
-                                              badRequest, dir, method, ok, path,
-                                              takeRequestBody, toResponse,
-                                              unBody)
+import           Happstack.Server            (ServerPart, askRq, badRequest, dir, method, ok, path)
 import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
@@ -39,32 +31,30 @@ main = do
       webApp repo = do
         appState <- atomically $ newTVar repo
         simpleHTTP nullConf $ msum
-          [ do dir "message" $ do method POST
-                                  processMessage appState,
-            do dir "notification.xml" $ do method GET
-                                           notificationXml appState,
+          [ dir "message" $ do method POST
+                               processMessage appState,
+            dir "notification.xml" $ do method GET
+                                        notificationXml appState,
             snapshotPath $ snapshotXml appState,
             deltaPath $ deltaXml appState
           ]
 
-      snapshotPath action =
-          do path $ \sessionId -> do
-              dir "snapshot.xml" $ do
-                  method GET
-                  action sessionId
+      snapshotPath action = path $ \sessionId -> 
+        dir "snapshot.xml" $ do
+          method GET
+          action sessionId
 
-      deltaPath action =
-          do path $ \sessionId -> path $ \deltaNumber -> do 
-                 dir "delta.xml" $ do
-                     method GET
-                     action sessionId deltaNumber
+      deltaPath action = path $ \sessionId -> 
+        path $ \deltaNumber -> dir "delta.xml" $ do 
+          method GET
+          action sessionId deltaNumber
 
 processMessage :: TVar Repository -> ServerPart L.ByteString
 processMessage appState = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
-      Just rqbody -> lift . (getResponse appState) . unBody $ rqbody
+      Just rqbody -> lift . getResponse appState . unBody $ rqbody
       Nothing     -> badRequest "Request has no body"
     where
         getResponse :: TVar Repository -> L.ByteString -> IO L.ByteString
@@ -76,7 +66,6 @@ processMessage appState = do
 
 response :: Repository -> L.ByteString -> (Repository, L.ByteString)
 response r xml = (r, xml)
-
 
 notificationXml :: TVar Repository -> ServerPart L.ByteString
 notificationXml appState = ok "Fine notification"
