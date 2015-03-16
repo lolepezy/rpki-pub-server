@@ -7,7 +7,7 @@ import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, askRq, badRequest, dir, method, ok, path)
+import           Happstack.Server            (ServerPart, askRq, badRequest, dir, method, path)
 import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
@@ -35,8 +35,8 @@ main = do
                                processMessage appState,
             dir "notification.xml" $ do method GET
                                         notificationXml appState,
-            snapshotPath $ snapshotXml appState,
-            deltaPath $ deltaXml appState
+            snapshotPath $ snapshotXmlFile appState,
+            deltaPath $ deltaXmlFile appState
           ]
 
       snapshotPath action = path $ \sessionId -> 
@@ -49,33 +49,36 @@ main = do
           method GET
           action sessionId deltaNumber
 
-processMessage :: TVar Repository -> ServerPart L.ByteString
+processMessage :: TVar Repository -> ServerPart (Maybe L.ByteString)
 processMessage appState = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
       Just rqbody -> lift . getResponse appState . unBody $ rqbody
-      Nothing     -> badRequest "Request has no body"
+      Nothing     -> badRequest $ Just "Request has no body"
     where
-        getResponse :: TVar Repository -> L.ByteString -> IO L.ByteString
+        getResponse :: TVar Repository -> L.ByteString -> IO (Maybe L.ByteString)
         getResponse appState request = atomically $ do
             state <- readTVar appState
             let (newRepo, res) = response state request
             writeTVar appState newRepo
             return res
 
-response :: Repository -> L.ByteString -> (Repository, L.ByteString)
-response r xml = (r, xml)
+response :: Repository -> L.ByteString -> (Repository, Maybe L.ByteString)
+response r xml = (r, Just xml)
 
-notificationXml :: TVar Repository -> ServerPart L.ByteString
+notificationXml :: TVar Repository -> ServerPart (Maybe L.ByteString)
 notificationXml repository = lift $ atomically $ do
     r <- readTVar repository
-    return $ getSnapshot r
+    return $ Just $ getSnapshot r
 
-snapshotXml :: TVar Repository -> String -> ServerPart L.ByteString
-snapshotXml repository sessionId = lift $ atomically $ do
-    r <- readTVar repository
-    return $ getSnapshot r
+snapshotXmlFile :: TVar Repository -> String -> ServerPart (Maybe L.ByteString)
+snapshotXmlFile repository sessionId = lift . atomically $ do
+    repo <- readTVar repository
+    return $ Just $ getSnapshot repo
 
-deltaXml :: TVar Repository -> String -> Int -> ServerPart L.ByteString
-deltaXml appState sessionId deltaNumber = ok "Fine delta"
+deltaXmlFile :: TVar Repository -> String -> Int -> ServerPart (Maybe L.ByteString)
+deltaXmlFile repository sessionId deltaNumber = lift . atomically $ do
+    repo <- readTVar repository
+    return $ getDelta repo deltaNumber
+    

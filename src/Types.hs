@@ -12,15 +12,15 @@ newtype Base64 = Base64 String
 
 data SnapshotDef = SnapshotDef Version SessionId Serial URI
 
-data DeltaDef = DeltaDef Serial URI
+data DeltaDef = DeltaDef Version SessionId Serial
 
 data Notification = Notification Version Serial SnapshotDef [DeltaDef]
 
 data Snapshot = Snapshot SnapshotDef [SnapshotPublish]
-data Delta = Delta [DeltaPublish] [Withdraw]
+data Delta = Delta DeltaDef [DeltaPublish] [Withdraw]
 
 data SnapshotPublish = SnapshotPublish URI Base64 Hash
-data DeltaPublish = DeltaPublish URI Hash Base64
+data DeltaPublish = DeltaPublish URI Base64 Hash
 
 data Withdraw = Withdraw URI Hash
 
@@ -35,6 +35,18 @@ snapshotXml (SnapshotDef (Version version) (SessionId uuid) (Serial serial) _) p
     ("session_id", show uuid) 
     ],
   elContent = map Elem publishElements
+  }
+
+deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
+deltaXml (DeltaDef (Version version) (SessionId uuid) (Serial serial)) publishElements withdrawElements = blank_element { 
+  elName = simpleQName "delta", 
+  elAttribs = attrs [
+    ("xmlns","http://www.ripe.net/rpki/rrdp"),
+    ("version", show version),
+    ("serial", show serial),
+    ("session_id", show uuid) 
+    ],
+  elContent = map Elem $ publishElements ++ withdrawElements
   }
 
 
