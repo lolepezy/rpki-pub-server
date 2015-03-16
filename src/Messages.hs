@@ -11,15 +11,13 @@ newtype Version = Version Int
 newtype Base64 = Base64 String
   deriving (Show, Eq)
 
-data QMessage = QueryMessage Version [QueryPdu] 
+data Message pdu = Message Version [pdu]
   deriving (Show, Eq)
   
-data Message = QMessage | RMessage
-  
-data RMessage = ReplyMessage Version [ReplyPdu] 
-  deriving (Show, Eq)
+type QMessage = Message QueryPdu
+type RMessage = Message ReplyPdu
 
-data QueryPdu = PubkishQ URI Base64 | WithdrawQ URI
+data QueryPdu = PublishQ URI Base64 | WithdrawQ URI
   deriving (Show, Eq)
   
 data ReplyPdu = PublishR URI | WithdrawR URI
@@ -51,13 +49,13 @@ parseMessage xml = do
                 _         -> Left $ UnexpectedElement (strContent element)
             ) $ elChildren doc
 
-    return $ QueryMessage (Version (read version)) pdus
+    return $ Message (Version (read version)) pdus
     where       
         toPublishPdu :: Maybe String -> String -> Either Error QueryPdu
         toPublishPdu Nothing _ = Left NoURI
         toPublishPdu (Just u) base64 = do
             uri <- maybeToEither (BadURI u) (parseURI u)
-            return $ PubkishQ uri (Base64 base64)
+            return $ PublishQ uri (Base64 base64)
 
         toWithdrawPdu :: Maybe String -> Either Error QueryPdu
         toWithdrawPdu Nothing = Left NoURI
@@ -67,13 +65,13 @@ parseMessage xml = do
 
 
 createReply :: RMessage -> String
-createReply (ReplyMessage version pdus) = 
+createReply (Message version pdus) = 
   showElement $ blank_element {
     elName = simpleQName "msg",
     elAttribs = attrs [("version", printV version), ("type", "reply")],
     elContent = map (\pdu -> 
       case pdu of 
-        PublishR uri -> pduElem "publish" uri 
+        PublishR uri  -> pduElem "publish" uri 
         WithdrawR uri -> pduElem "withdraw" uri 
       ) pdus
     }

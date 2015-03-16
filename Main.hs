@@ -11,7 +11,7 @@ import           Happstack.Server            (ServerPart, askRq, badRequest, dir
 import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
-import           Repo
+import           RRDPRepo
 
 -- TODO get it from the config of command line
 repoPath :: String
@@ -68,10 +68,14 @@ response :: Repository -> L.ByteString -> (Repository, L.ByteString)
 response r xml = (r, xml)
 
 notificationXml :: TVar Repository -> ServerPart L.ByteString
-notificationXml appState = ok "Fine notification"
+notificationXml repository = lift $ atomically $ do
+    r <- readTVar repository
+    return $ getSnapshot r
 
 snapshotXml :: TVar Repository -> String -> ServerPart L.ByteString
-snapshotXml appState sessionId = ok "Fine snapshot"
+snapshotXml repository sessionId = lift $ atomically $ do
+    r <- readTVar repository
+    return $ getSnapshot r
 
 deltaXml :: TVar Repository -> String -> Int -> ServerPart L.ByteString
 deltaXml appState sessionId deltaNumber = ok "Fine delta"
