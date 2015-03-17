@@ -1,12 +1,12 @@
 module Types where
 
-import Data.UUID as UU
+
 import Network.URI
 import Text.XML.Light
 
-newtype Serial = Serial Integer
+newtype Serial = Serial Int
 newtype Version = Version Int
-newtype SessionId = SessionId UUID
+newtype SessionId = SessionId String
 newtype Hash = Hash String
 newtype Base64 = Base64 String
 
@@ -32,7 +32,7 @@ snapshotXml (SnapshotDef (Version version) (SessionId uuid) (Serial serial) _) p
     ("xmlns","http://www.ripe.net/rpki/rrdp"),
     ("version", show version),
     ("serial", show serial),
-    ("session_id", show uuid) 
+    ("session_id", uuid) 
     ],
   elContent = map Elem publishElements
   }
