@@ -27,40 +27,31 @@ main = do
     existingRepo <- readRepo repoPath
     case existingRepo of
       Nothing -> die "No repo!"
-      Just repo -> webApp repo
-    where 
-      webApp repo = do
-        appState <- atomically $ newTVar repo
-        simpleHTTP nullConf $ msum
-          [ dir "message" $ do 
-              method POST
-              processMessage appState,
-                               
-            dir "notification.xml" $ do 
-                method GET
-                r <- notificationXml appState
-                respondRRDP r,
-                                        
-            path $ \sessionId -> dir "snapshot.xml" $ do 
-                method GET
-                s <- snapshotXmlFile appState sessionId
-                respondRRDP s,
-                
-            path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ do
-                method GET
-                d <- deltaXmlFile appState sessionId deltaNumber
-                respondRRDP d
-          ]
+      Just repo -> setupWebApp repo
 
-      snapshotPath action = path $ \sessionId -> 
-        dir "snapshot.xml" $ do
-          method GET
-          action sessionId
+setupWebApp :: Repository -> IO ()
+setupWebApp repo = do
+  appState <- atomically $ newTVar repo
+  simpleHTTP nullConf $ msum
+    [ dir "message" $ do 
+        method POST
+        processMessage appState,
 
-      deltaPath action = path $ \sessionId -> 
-        path $ \deltaNumber -> dir "delta.xml" $ do
+      dir "notification.xml" $ do 
           method GET
-          action sessionId deltaNumber
+          r <- notificationXml appState
+          respondRRDP r,
+
+      path $ \sessionId -> dir "snapshot.xml" $ do 
+          method GET
+          s <- snapshotXmlFile appState sessionId
+          respondRRDP s,
+
+      path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ do
+          method GET
+          d <- deltaXmlFile appState sessionId deltaNumber
+          respondRRDP d
+    ]
 
 respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
@@ -81,10 +72,10 @@ processMessage appState = do
       Nothing     -> badRequest "Request has no body"
     where
         getResponse :: TVar Repository -> L.ByteString -> IO L.ByteString
-        getResponse appState request = atomically $ do
-            state <- readTVar appState
+        getResponse as request = atomically $ do
+            state <- readTVar as
             let (newRepo, res) = response state request
-            writeTVar appState newRepo
+            writeTVar as newRepo
             return res
 
 response :: Repository -> L.ByteString -> (Repository, L.ByteString)
