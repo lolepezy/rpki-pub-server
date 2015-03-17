@@ -7,7 +7,7 @@ import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, askRq, badRequest, dir, method, ok, path)
+import           Happstack.Server            (ServerPart, askRq, badRequest, notFound, dir, method, ok, path)
 import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
@@ -65,10 +65,10 @@ main = do
 respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
-respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = badRequest $ 
+respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $ 
   L.pack $ "No delta for session_id " ++ (show sessionId) ++ " and serial " ++ (show serial)
   
-respondRRDP (Left (NoSnapshot (SessionId sessionId))) = badRequest $ 
+respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
   L.pack $ "No snapshot for session_id " ++ (show sessionId)
 
  
