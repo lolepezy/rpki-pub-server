@@ -7,12 +7,12 @@ import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, askRq, badRequest, notFound, dir, method, ok, path)
-import           Happstack.Server.Env        (simpleHTTP)
+import           Happstack.Server            (ServerPart, simpleHTTP, askRq, badRequest, notFound, dir, method, ok, path)
+--import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
-import           RRDPRepo
 import           Types
+import           RRDPRepo
 
 -- TODO get it from the config of command line
 repoPath :: String
@@ -32,7 +32,7 @@ main = do
 setupWebApp :: Repository -> IO ()
 setupWebApp repo = do
   appState <- atomically $ newTVar repo
-  simpleHTTP nullConf $ msum
+  simpleHTTP nullConf { port = 9999 } $ msum
     [ dir "message" $ do 
         method POST
         processMessage appState,
