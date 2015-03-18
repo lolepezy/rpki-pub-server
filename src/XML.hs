@@ -99,35 +99,33 @@ parsePWElements doc publishC withdrawC = do
 
 parseMessage :: L.ByteString -> Either Error QMessage
 parseMessage xml = do
-    doc     <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
-    version <- maybeToEither NoVersion $ lookupAttr (simpleQName "version") $ elAttribs doc
-    (p, w)  <- parsePWElements doc (simplePublishParse PublishQ) (withdrawParse WithdrawQ)
-    return $ Message (Version (read version)) $ p ++ w
-
+    doc      <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
+    version  <- maybeToEither NoVersion $ lookupAttr (simpleQName "version") $ elAttribs doc
+    (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawParse WithdrawQ)
+    return $ Message (Version (read version)) $ ps ++ ws
 
 parseSnapshot :: L.ByteString -> Either Error Snapshot
 parseSnapshot xml = do
-    doc       <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)    
-    sVersion  <- maybeToEither NoVersion $ getAttr "version" $ elAttribs doc
-    sessionId <- maybeToEither NoSessionId $ getAttr "session_id" $ elAttribs doc
-    sSerial   <- maybeToEither NoSerial $ getAttr "serial" $ elAttribs doc
-    version   <- maybeToEither (BadVersion sVersion) (readMaybe sVersion)
-    serial    <- maybeToEither (BadSerial sSerial) (readMaybe sSerial)
-    (p, _)    <- parsePWElements doc (simplePublishParse SnapshotPublish) (\_ _ -> Left NoHash)
-    return $ Snapshot (SnapshotDef (Version version) (SessionId sessionId) (Serial serial)) p
-
+    (doc, sessionId, version, serial)  <- parseCommonAttrs xml
+    (ps, _)   <- parsePWElements doc (simplePublishParse SnapshotPublish) (\_ _ -> Left NoHash)
+    return $ Snapshot (SnapshotDef version sessionId serial) ps
 
 parseDelta :: L.ByteString -> Either Error Delta
 parseDelta xml = do
-    doc       <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)    
+    (doc, sessionId, version, serial)  <- parseCommonAttrs xml
+    (ps, ws)  <- parsePWElements doc (hashedPublishParse DeltaPublish) (withdrawParse Withdraw)
+    return $ Delta (DeltaDef version sessionId serial) ps ws
+
+parseCommonAttrs :: L.ByteString
+                      -> Either Error (Element, SessionId, Version, Serial)
+parseCommonAttrs xml = do
+    doc       <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
     sVersion  <- maybeToEither NoVersion $ getAttr "version" $ elAttribs doc
     sessionId <- maybeToEither NoSessionId $ getAttr "session_id" $ elAttribs doc
     sSerial   <- maybeToEither NoSerial $ getAttr "serial" $ elAttribs doc
     version   <- maybeToEither (BadVersion sVersion) (readMaybe sVersion)
     serial    <- maybeToEither (BadSerial sSerial) (readMaybe sSerial)
-    (p, w)    <- parsePWElements doc (hashedPublishParse DeltaPublish) (withdrawParse Withdraw)
-    return $ Delta (DeltaDef (Version version) (SessionId sessionId) (Serial serial)) p w
-
+    return (doc, SessionId sessionId, Version version, Serial serial)
 
 
 createReply :: RMessage -> String
@@ -150,12 +148,10 @@ maybeToEither e Nothing  = Left e
 maybeToEither _ (Just a) = Right a
 
 getAttr :: String -> [Attr] -> Maybe String
-getAttr name a = lookupAttr (simpleQName name) a
+getAttr name = lookupAttr (simpleQName name)
 
 attrs :: [(String, String)] -> [Attr]
 attrs as = [ Attr { attrKey = simpleQName name, attrVal = value } | (name, value) <- as]
 
 simpleQName :: String -> QName
 simpleQName name = blank_name { qName = name }
-
-
