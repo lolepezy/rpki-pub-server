@@ -1,72 +1,62 @@
 module Types where
 
-
 import Network.URI
-import Text.XML.Light
 
-newtype Serial = Serial Int
-newtype Version = Version Int
-newtype SessionId = SessionId String
-newtype Hash = Hash String
-newtype Base64 = Base64 String
+newtype Serial = Serial Int deriving (Show, Eq)
+newtype SessionId = SessionId String deriving (Show, Eq)
+newtype Hash = Hash String deriving (Show, Eq)
+newtype Version = Version Int deriving (Show, Eq)
+newtype Base64 = Base64 String deriving (Show, Eq)
 
-data SnapshotDef = SnapshotDef Version SessionId Serial URI
+data SnapshotDef = SnapshotDef Version SessionId Serial
+  deriving (Show, Eq)
 
 data DeltaDef = DeltaDef Version SessionId Serial
+  deriving (Show, Eq)
 
 data Notification = Notification Version Serial SnapshotDef [DeltaDef]
+  deriving (Show, Eq)
 
 data Snapshot = Snapshot SnapshotDef [SnapshotPublish]
+  deriving (Show, Eq)
+  
 data Delta = Delta DeltaDef [DeltaPublish] [Withdraw]
+  deriving (Show, Eq)
 
-data SnapshotPublish = SnapshotPublish URI Base64 Hash
-data DeltaPublish = DeltaPublish URI Base64 Hash
+data SnapshotPublish = SnapshotPublish URI Base64
+  deriving (Show, Eq)
+
+data DeltaPublish = DeltaPublish URI Base64 (Maybe Hash)
+  deriving (Show, Eq)
 
 data Withdraw = Withdraw URI Hash
+  deriving (Show, Eq)
+
+-- publish/withdraw messages
+data Message pdu = Message Version [pdu]
+  deriving (Show, Eq)
+
+type QMessage = Message QueryPdu
+type RMessage = Message ReplyPdu
+
+data QueryPdu = PublishQ URI Base64 | WithdrawQ URI Hash
+  deriving (Show, Eq)
+
+data ReplyPdu = PublishR URI | WithdrawR URI
+  deriving (Show, Eq)
+
+data Error = BadXml String
+  | NoVersion
+  | NoMessageType
+  | BadMessageType String
+  | UnexpectedElement String
+  | NoURI
+  | NoSessionId
+  | NoSerial
+  | NoHash
+  | BadURI String
+  | BadVersion String
+  | BadSerial String
 
 
-snapshotXml :: SnapshotDef -> [Element] -> Element 
-snapshotXml (SnapshotDef (Version version) (SessionId uuid) (Serial serial) _) publishElements = blank_element { 
-  elName = simpleQName "snapshot", 
-  elAttribs = attrs [
-    ("xmlns","http://www.ripe.net/rpki/rrdp"),
-    ("version", show version),
-    ("serial", show serial),
-    ("session_id", uuid) 
-    ],
-  elContent = map Elem publishElements
-  }
 
-deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
-deltaXml (DeltaDef (Version version) (SessionId uuid) (Serial serial)) publishElements withdrawElements = blank_element { 
-  elName = simpleQName "delta", 
-  elAttribs = attrs [
-    ("xmlns","http://www.ripe.net/rpki/rrdp"),
-    ("version", show version),
-    ("serial", show serial),
-    ("session_id", show uuid) 
-    ],
-  elContent = map Elem $ publishElements ++ withdrawElements
-  }
-
-
-publishXml :: Element
-publishXml = blank_element { elName = simpleQName "publish" }
-
-withdrawXml :: Element
-withdrawXml = blank_element { elName = simpleQName "withdraw" }
-
-uriXml :: URI -> Element -> Element
-uriXml uri (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs [("uri", show uri)] }
-
-base64Xml :: Base64 -> Element -> Element
-base64Xml (Base64 base64) xml = xml { elContent = [Text blank_cdata { cdData = base64 }] }
-
-hashXml :: Hash -> Element -> Element
-hashXml (Hash hash) (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs [("hash", hash)] }
-
-attrs :: [(String, String)] -> [Attr]
-attrs as = [ Attr { attrKey = simpleQName name, attrVal = value } | (name, value) <- as]
-
-simpleQName :: String -> QName
-simpleQName name = blank_name { qName = name }
