@@ -12,7 +12,7 @@ import           Happstack.Server            (ServerPart, simpleHTTP, askRq, bad
 import           Happstack.Server.Types
 
 import           Types
-import           RRDPRepo
+import           RRDP.Repo
 
 -- TODO get it from the config of command line
 repoPath :: String
@@ -26,8 +26,8 @@ main :: IO ()
 main = do
     existingRepo <- readRepo repoPath
     case existingRepo of
-      Nothing -> die "No repo!"
-      Just repo -> setupWebApp repo
+      Left e -> die $ "No repo!" ++ show e
+      Right repo -> setupWebApp repo
 
 setupWebApp :: Repository -> IO ()
 setupWebApp repo = do
@@ -57,10 +57,10 @@ respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
 respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $ 
-  L.pack $ "No delta for session_id " ++ (show sessionId) ++ " and serial " ++ (show serial)
+  L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
   
 respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
-  L.pack $ "No snapshot for session_id " ++ (show sessionId)
+  L.pack $ "No snapshot for session_id " ++ show sessionId
 
  
 processMessage :: TVar Repository -> ServerPart L.ByteString
