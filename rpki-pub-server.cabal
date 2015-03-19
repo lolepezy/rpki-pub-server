@@ -30,6 +30,7 @@ executable rpki-pub-server
                       ,containers >= 0.5
                       ,transformers >= 0.3
                       ,stm >= 2.4.2
+                      ,directory >= 1.2
 
 
   -- hs-source-dirs:      
