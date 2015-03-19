@@ -1,5 +1,4 @@
-module XML where
-
+module RRDP.XML where
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Network.URI
@@ -77,24 +76,25 @@ parsePWElements :: Element ->
                    Either Error ([p], [w])
 parsePWElements doc publishC withdrawC = do
     {- wrap "publish" records in to Right and "withdraw" records into Left
-       so pdu consists of stuff like "Right Right p" and "Right Left w" -}
+       so pdus consists of stuff like "Right Right p" and "Right Left w" -}
     pdus <- mapM (\element ->
             case element of
                 Element { 
                     elName = QName { qName = "publish" },
-                    elAttribs = attributes,
+                    elAttribs = attrs,
                     elContent = [Text CData { cdData = base64 }]
-                  } -> fmap Right (publishC (getAttr "uri" attributes) (getAttr "hash" attributes) base64)
+                  } -> fmap Right (publishC (getAttr "uri" attrs) (getAttr "hash" attrs) (normalize base64))
 
                 Element { 
                    elName = QName { qName = "withdraw" },
-                   elAttribs = attributes
-                  } -> fmap Left (withdrawC (getAttr "uri" attributes) (getAttr "hash" attributes))
+                   elAttribs = attr
+                  } -> fmap Left (withdrawC (getAttr "uri" attr) (getAttr "hash" attr))
 
                 _         -> Left $ UnexpectedElement (strContent element)
             ) $ elChildren doc
 
     return ([pdu | Right pdu <- pdus], [pdu | Left pdu <- pdus])
+    where normalize = filter (\c -> not (c `elem` " \n\t"))
 
 
 parseMessage :: L.ByteString -> Either Error QMessage
@@ -106,13 +106,13 @@ parseMessage xml = do
 
 parseSnapshot :: L.ByteString -> Either Error Snapshot
 parseSnapshot xml = do
-    (doc, sessionId, version, serial)  <- parseCommonAttrs xml
+    (doc, sessionId, version, serial) <- parseCommonAttrs xml
     (ps, _)   <- parsePWElements doc (simplePublishParse SnapshotPublish) (\_ _ -> Left NoHash)
     return $ Snapshot (SnapshotDef version sessionId serial) ps
 
 parseDelta :: L.ByteString -> Either Error Delta
 parseDelta xml = do
-    (doc, sessionId, version, serial)  <- parseCommonAttrs xml
+    (doc, sessionId, version, serial) <- parseCommonAttrs xml
     (ps, ws)  <- parsePWElements doc (hashedPublishParse DeltaPublish) (withdrawParse Withdraw)
     return $ Delta (DeltaDef version sessionId serial) ps ws
 
@@ -143,10 +143,6 @@ createReply (Message version pdus) =
       printV (Version v) = show v
       pduElem name uri = Elem $ blank_element { elName = simpleQName name, elAttribs = attrs [("uri", show uri)] }
 
-maybeToEither :: e -> Maybe a -> Either e a
-maybeToEither e Nothing  = Left e
-maybeToEither _ (Just a) = Right a
-
 getAttr :: String -> [Attr] -> Maybe String
 getAttr name = lookupAttr (simpleQName name)
 
@@ -155,3 +151,4 @@ attrs as = [ Attr { attrKey = simpleQName name, attrVal = value } | (name, value
 
 simpleQName :: String -> QName
 simpleQName name = blank_name { qName = name }
+
