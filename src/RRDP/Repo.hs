@@ -1,6 +1,7 @@
 module RRDP.Repo where
 
 import Data.Map as M
+import Data.Set as S
 import Data.UUID as UU
 import Network.URI
 import qualified Data.ByteString.Lazy.Char8  as L
@@ -71,7 +72,8 @@ update r@(Repository
                          [ DeltaPublish uri base64 Nothing | PublishQ  uri base64 <- pdus ] 
                          [ Withdraw     uri hash           | WithdrawQ uri hash   <- pdus ]
     -- TODO compare the hash and complain if it differs from the hash in withdraw message
-    shouldBeWithdrawn (SnapshotPublish uri base64) = False
+    shouldBeWithdrawn (SnapshotPublish uri base64) = uri `S.member` urisToWithdraw 
+    urisToWithdraw = S.fromList [ uri | WithdrawQ uri _  <- pdus ]
 
 
 
