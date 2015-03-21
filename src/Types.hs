@@ -45,7 +45,7 @@ data QueryPdu = PublishQ URI Base64 | WithdrawQ URI Hash
 data ReplyPdu = PublishR URI | WithdrawR URI
   deriving (Show, Eq)
 
-data Error = BadXml String
+data ParseError = BadXml String
   | NoVersion
   | NoMessageType
   | BadMessageType String
@@ -57,7 +57,7 @@ data Error = BadXml String
   | BadURI String
   | BadVersion String
   | BadSerial String
-
+  deriving (Eq, Show)
 
 maybeToEither :: e -> Maybe a -> Either e a
 maybeToEither e Nothing  = Left e

@@ -13,6 +13,8 @@ import RRDP.XML
 
 data RRDPError = NoSnapshot SessionId 
                | NoDelta SessionId Serial
+               | BadHash { passed :: Hash, stored ::Hash, uri :: URI }
+               | BadMessage ParseError
   deriving (Eq, Show)
 
 data RepoError = CannotReadNotification
@@ -20,7 +22,9 @@ data RepoError = CannotReadNotification
                | CannotReadDelta
   deriving (Eq, Show)
 
-type RRDPResponse = Either RRDPError L.ByteString
+type RRDPValue r = Either RRDPError r
+
+type RRDPResponse = RRDPValue L.ByteString
 
 -- TODO Force snapshot and deltas to have the same session id
 data Repository = Repository {
@@ -55,13 +59,14 @@ getDelta (Repository { deltas = deltas }) sessionId serial @ (Serial deltaNumber
 
 
 {- Update repository based on incoming message -} 
-update :: Repository -> QMessage -> (Repository, RMessage)
-update r@(Repository 
-            (Snapshot (SnapshotDef v@(Version rVersion) s@(SessionId sessionId) (Serial serial)) publishes) 
-            deltas) (Message (Version mVersion) pdus) =
-  (newRepo, reply)
+updateRepo :: Repository -> QMessage -> RRDPValue (Repository, RMessage)
+updateRepo r@(Repository 
+               (Snapshot (SnapshotDef v@(Version rVersion) s@(SessionId sessionId) (Serial serial)) publishes) 
+               deltas) (Message (Version mVersion) pdus) =
+  -- TODO Implement proper error generation in case of mismatching hashes
+  Right (newRepo, reply)
   where
-    newSerial    = serial + 1 
+    newSerial    = serial + 1
     newRepo      = Repository (Snapshot (SnapshotDef v s (Serial newSerial)) newPublishes) newDeltas
 
     reply        = Message (Version mVersion) replies :: Message ReplyPdu

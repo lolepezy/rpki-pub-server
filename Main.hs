@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 import System.Exit
 
@@ -6,13 +7,17 @@ import           Control.Concurrent.STM
 import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
+import           Data.String.Interpolate
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, simpleHTTP, askRq, badRequest, notFound, dir, method, ok, path)
+import           Happstack.Server            (ServerPart, simpleHTTP, askRq, 
+                                              badRequest, notFound, internalServerError, 
+                                              dir, method, ok, path)
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
 import           Types
 import           RRDP.Repo
+import           RRDP.XML
 
 -- TODO get it from the config of command line
 repoPath :: String
@@ -26,7 +31,7 @@ main :: IO ()
 main = do
     existingRepo <- readRepo repoPath
     case existingRepo of
-      Left e -> die $ "No repo!" ++ show e
+      Left e -> die $ [i|Repository at the location #{repoPath} is not found or can not be read, error: #{e}.|]
       Right repo -> setupWebApp repo
 
 setupWebApp :: Repository -> IO ()
@@ -57,10 +62,16 @@ respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
 respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $ 
-  L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
+  L.pack $ [i|No delta for session_id=#{sessionId} and serial #{serial}|]
   
 respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
-  L.pack $ "No snapshot for session_id " ++ show sessionId
+  L.pack $ [i|No snapshot for session_id=#{sessionId}|]
+
+respondRRDP (Left (BadHash { passed = p, stored = s, uri = u })) = badRequest $ 
+  L.pack $ [i|The replacement for the object #{u} has hash #{s} but is required to have #{p}|]
+
+respondRRDP (Left e) = internalServerError $ 
+  L.pack $ [i|Something bad has happened: #{e}|]
 
  
 processMessage :: TVar Repository -> ServerPart L.ByteString
@@ -68,18 +79,36 @@ processMessage appState = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
-      Just rqbody -> lift . getResponse appState . unBody $ rqbody
+      Just rqbody -> respond rqbody
       Nothing     -> badRequest "Request has no body"
-    where
-        getResponse :: TVar Repository -> L.ByteString -> IO L.ByteString
-        getResponse as request = atomically $ do
-            state <- readTVar as
-            let (newRepo, res) = response state request
-            writeTVar as newRepo
-            return res
+    where        
+      respond rqbody = do
+        rr <- liftIO $ getResponse $ unBody rqbody
+        case rr of
+          Right reply   -> ok reply
+          e @ (Left _ ) -> respondRRDP e                       
 
-response :: Repository -> L.ByteString -> (Repository, L.ByteString)
-response r xml = (r, xml)
+      getResponse :: L.ByteString -> IO (Either RRDPError L.ByteString)
+      getResponse request = atomically $ do
+            state <- readTVar appState
+            updateAppState $ applyToRepo state request
+
+      updateAppState :: Either RRDPError (Repository, L.ByteString) -> STM (Either RRDPError L.ByteString)
+      updateAppState (Left e) = return $ Left e
+      updateAppState (Right (newRepo, reply)) = do
+        writeTVar appState newRepo
+        return $ Right reply        
+
+
+applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
+applyToRepo repo queryXml = do 
+  queryMessage            <- mapParseError $ parseMessage queryXml
+  (newRepo, replyMessage) <- updateRepo repo queryMessage
+  return (newRepo, createReply replyMessage)
+  where 
+    mapParseError (Left e)  = Left $ BadMessage e
+    mapParseError (Right r) = Right r
+
 
 notificationXml :: TVar Repository -> ServerPart RRDPResponse
 notificationXml repository = lift $ atomically $ do

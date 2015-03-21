@@ -51,21 +51,21 @@ hashXml (Hash hash) (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ a
 
 
 simplePublishParse :: (URI -> Base64 -> p) -> 
-                      Maybe String -> Maybe String -> String -> Either Error p
+                      Maybe String -> Maybe String -> String -> Either ParseError p
 simplePublishParse contructor maybeUri _ base64 = do
     u <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ contructor uri (Base64 base64)
 
 hashedPublishParse :: (URI -> Base64 -> Maybe Hash -> p) -> 
-                       Maybe String -> Maybe String -> String -> Either Error p
+                       Maybe String -> Maybe String -> String -> Either ParseError p
 hashedPublishParse constructor maybeUri hash base64 = do
     u <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ constructor uri (Base64 base64) (liftM Hash hash)
 
 withdrawParse :: (URI -> Hash -> p) -> 
-                 Maybe String -> Maybe String -> Either Error p
+                 Maybe String -> Maybe String -> Either ParseError p
 withdrawParse constructor maybeUri maybeHash = do
     u    <- maybeToEither NoURI maybeUri
     hash <- maybeToEither NoHash maybeHash
@@ -73,9 +73,9 @@ withdrawParse constructor maybeUri maybeHash = do
     return $ constructor uri $ Hash hash
 
 parsePWElements :: Element -> 
-                   (Maybe String -> Maybe String -> String -> Either Error p) ->
-                   (Maybe String -> Maybe String -> Either Error w) ->
-                   Either Error ([p], [w])
+                   (Maybe String -> Maybe String -> String -> Either ParseError p) ->
+                   (Maybe String -> Maybe String -> Either ParseError w) ->
+                   Either ParseError ([p], [w])
 parsePWElements doc publishC withdrawC = do
     {- wrap "publish" records in to Right and "withdraw" records into Left
        so pdus consists of stuff like "Right Right p" and "Right Left w" -}
@@ -99,27 +99,27 @@ parsePWElements doc publishC withdrawC = do
     where normalize = filter (\c -> not (c `elem` " \n\t"))
 
 
-parseMessage :: L.ByteString -> Either Error QMessage
+parseMessage :: L.ByteString -> Either ParseError QMessage
 parseMessage xml = do
     doc      <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
     version  <- maybeToEither NoVersion $ lookupAttr (simpleQName "version") $ elAttribs doc
     (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawParse WithdrawQ)
     return $ Message (Version (read version)) $ ps ++ ws
 
-parseSnapshot :: L.ByteString -> Either Error Snapshot
+parseSnapshot :: L.ByteString -> Either ParseError Snapshot
 parseSnapshot xml = do
     (doc, sessionId, version, serial) <- parseCommonAttrs xml
     (ps, _)   <- parsePWElements doc (simplePublishParse SnapshotPublish) (\_ _ -> Left NoHash)
     return $ Snapshot (SnapshotDef version sessionId serial) ps
 
-parseDelta :: L.ByteString -> Either Error Delta
+parseDelta :: L.ByteString -> Either ParseError Delta
 parseDelta xml = do
     (doc, sessionId, version, serial) <- parseCommonAttrs xml
     (ps, ws)  <- parsePWElements doc (hashedPublishParse DeltaPublish) (withdrawParse Withdraw)
     return $ Delta (DeltaDef version sessionId serial) ps ws
 
 parseCommonAttrs :: L.ByteString
-                      -> Either Error (Element, SessionId, Version, Serial)
+                      -> Either ParseError (Element, SessionId, Version, Serial)
 parseCommonAttrs xml = do
     doc       <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
     sVersion  <- maybeToEither NoVersion $ getAttr "version" $ elAttribs doc
@@ -130,9 +130,13 @@ parseCommonAttrs xml = do
     return (doc, SessionId sessionId, Version version, Serial serial)
 
 
-createReply :: RMessage -> String
+{- 
+   Refactor that to put all the dependencies on the concrete 
+   XML library inside of the RRDP.XML module.
+-}
+createReply :: RMessage -> L.ByteString
 createReply (Message version pdus) =
-  showElement $ blank_element {
+  L.pack . ppElement $ blank_element {
     elName = simpleQName "msg",
     elAttribs = attrs [("version", printV version), ("type", "reply")],
     elContent = map (\pdu ->
