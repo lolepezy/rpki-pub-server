@@ -1,4 +1,10 @@
-module RRDP.XML where
+module RRDP.XML (
+  snapshotXml, deltaXml, publishXml, withdrawXml, 
+  uriXml, base64Xml, hashXml, 
+  parseMessage, createReply,
+  parseSnapshot, parseDelta
+)
+where
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Network.URI
@@ -8,27 +14,23 @@ import           Control.Monad
 import           Types
 
 snapshotXml :: SnapshotDef -> [Element] -> Element
-snapshotXml (SnapshotDef (Version version) (SessionId uuid) (Serial serial)) publishElements = blank_element {
-  elName = simpleQName "snapshot",
+snapshotXml (SnapshotDef version sId serial) publishElements = 
+  commonXml version sId serial "snapshot" publishElements  
+
+deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
+deltaXml (DeltaDef version sId serial) publishElements withdrawElements = 
+  commonXml version sId serial "delta" (publishElements ++ withdrawElements)
+
+commonXml :: Version -> SessionId -> Serial -> String -> [Element] -> Element
+commonXml (Version version) (SessionId uuid) (Serial serial) elemName elements = blank_element {
+  elName = simpleQName elemName,
   elAttribs = attrs [
     ("xmlns","http://www.ripe.net/rpki/rrdp"),
     ("version", show version),
     ("serial", show serial),
     ("session_id", uuid)
     ],
-  elContent = map Elem publishElements
-  }
-
-deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
-deltaXml (DeltaDef (Version version) (SessionId uuid) (Serial serial)) publishElements withdrawElements = blank_element {
-  elName = simpleQName "delta",
-  elAttribs = attrs [
-    ("xmlns","http://www.ripe.net/rpki/rrdp"),
-    ("version", show version),
-    ("serial", show serial),
-    ("session_id", show uuid)
-    ],
-  elContent = map Elem $ publishElements ++ withdrawElements
+  elContent = map Elem elements
   }
 
 
