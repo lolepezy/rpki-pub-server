@@ -63,14 +63,22 @@ update r@(Repository
   where
     newSerial    = serial + 1 
     newRepo      = Repository (Snapshot (SnapshotDef v s (Serial newSerial)) newPublishes) newDeltas
-    reply        = Message (Version 1) [] :: Message ReplyPdu
+
+    reply        = Message (Version mVersion) replies :: Message ReplyPdu
+    replies      = Prelude.map (\m -> case m of  
+                                        PublishQ uri base64 -> PublishR uri
+                                        WithdrawQ uri _     -> WithdrawR uri
+                               ) pdus  
+    
     newPublishes = (Prelude.filter shouldBeWithdrawn publishes) ++ newPublish
     newPublish   = [ SnapshotPublish uri base64 | PublishQ uri base64 <- pdus ]
     newDeltas    = M.insert newSerial newDelta deltas
+
     -- TODO compute the hash
     newDelta     = Delta (DeltaDef v s $ Serial newSerial)
                          [ DeltaPublish uri base64 Nothing | PublishQ  uri base64 <- pdus ] 
                          [ Withdraw     uri hash           | WithdrawQ uri hash   <- pdus ]
+
     -- TODO compare the hash and complain if it differs from the hash in withdraw message
     shouldBeWithdrawn (SnapshotPublish uri base64) = uri `S.member` urisToWithdraw 
     urisToWithdraw = S.fromList [ uri | WithdrawQ uri _  <- pdus ]
