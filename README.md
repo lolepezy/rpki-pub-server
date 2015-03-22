@@ -14,9 +14,8 @@ Current TODOs:
 
 * Add msg proper handling 
   - respond with coresponding publish/withdraw
-  - create deltas
-  - update repo
-  - do both previous items atomically 
+
+* Generate notification.xml
 
 * Add repo reading from the specified location
 * Add updating files on disk
