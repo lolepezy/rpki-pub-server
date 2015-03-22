@@ -70,8 +70,7 @@ respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $
 respondRRDP (Left (BadHash { passed = p, stored = s, uri = u })) = badRequest $ 
   L.pack $ [i|The replacement for the object #{u} has hash #{s} but is required to have #{p}|]
 
-respondRRDP (Left e) = internalServerError $ 
-  L.pack $ [i|Something bad has happened: #{e}|]
+respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ [i|Message parse error #{parseError}|]
 
  
 processMessage :: TVar Repository -> ServerPart L.ByteString
