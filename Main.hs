@@ -90,13 +90,11 @@ processMessage appState = do
       getResponse :: L.ByteString -> IO (Either RRDPError L.ByteString)
       getResponse request = atomically $ do
             state <- readTVar appState
-            updateAppState $ applyToRepo state request
-
-      updateAppState :: Either RRDPError (Repository, L.ByteString) -> STM (Either RRDPError L.ByteString)
-      updateAppState (Left e) = return $ Left e
-      updateAppState (Right (newRepo, reply)) = do
-        writeTVar appState newRepo
-        return $ Right reply        
+            case applyToRepo state request of
+              Right (newRepo, reply) -> do
+                writeTVar appState newRepo
+                return $ Right reply 
+              Left e -> return $ Left e
 
 
 applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
@@ -111,8 +109,8 @@ applyToRepo repo queryXml = do
 
 notificationXml :: TVar Repository -> ServerPart RRDPResponse
 notificationXml repository = lift $ atomically $ do
-    r <- readTVar repository
-    return $ getSnapshot r
+    repo <- readTVar repository
+    return $ getSnapshot repo
 
 snapshotXmlFile :: TVar Repository -> String -> ServerPart RRDPResponse
 snapshotXmlFile repository sessionId = lift . atomically $ do
