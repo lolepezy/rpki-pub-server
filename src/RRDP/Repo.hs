@@ -30,7 +30,7 @@ type RRDPResponse = RRDPValue L.ByteString
 data Repository = Repository {
   snapshost :: Snapshot,
   deltas :: M.Map Int Delta
-}
+} deriving (Show)
 
 data AppState = AppState {
   session :: Map SessionId Repository,
@@ -75,7 +75,7 @@ updateRepo r@(Repository
                                         WithdrawQ uri _     -> WithdrawR uri
                                ) pdus  
     
-    newPublishes = (Prelude.filter shouldBeWithdrawn publishes) ++ newPublish
+    newPublishes = (Prelude.filter (not . shouldBeWithdrawn) publishes) ++ newPublish
     newPublish   = [ SnapshotPublish uri base64 | PublishQ uri base64 <- pdus ]
     newDeltas    = M.insert newSerial newDelta deltas
 
@@ -95,6 +95,7 @@ updateRepo r@(Repository
 emptyRepo :: Maybe Repository
 emptyRepo = do
     uuid <- UU.fromString "c2cc10e1-57d6-4b6f-9899-38d972112d8c"
+    uri <- parseURI "rsync://host.com/a/b"
     return $ Repository
           ( Snapshot
             (SnapshotDef
@@ -102,7 +103,7 @@ emptyRepo = do
               (SessionId (show uuid))
               (Serial 1)
               )
-            [SnapshotPublish nullURI (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b")])
+            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b")])
           M.empty
 
 readRepo :: String -> IO (Either RepoError Repository)
