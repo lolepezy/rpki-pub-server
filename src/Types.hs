@@ -1,6 +1,7 @@
 module Types where
 
 import Network.URI
+import qualified Data.ByteString.Lazy.Char8  as L
 
 newtype Serial = Serial Int deriving (Show, Eq)
 newtype SessionId = SessionId String deriving (Show, Eq)
@@ -23,10 +24,10 @@ data Snapshot = Snapshot SnapshotDef [SnapshotPublish]
 data Delta = Delta DeltaDef [DeltaPublish] [Withdraw]
   deriving (Show, Eq)
 
-data SnapshotPublish = SnapshotPublish URI Base64
+data SnapshotPublish = SnapshotPublish !URI !Base64 !Hash
   deriving (Show, Eq)
 
-data DeltaPublish = DeltaPublish URI Base64 (Maybe Hash)
+data DeltaPublish = DeltaPublish !URI !Base64 !(Maybe Hash)
   deriving (Show, Eq)
 
 data Withdraw = Withdraw URI Hash
@@ -39,10 +40,13 @@ data Message pdu = Message Version [pdu]
 type QMessage = Message QueryPdu
 type RMessage = Message ReplyPdu
 
-data QueryPdu = PublishQ URI Base64 | WithdrawQ URI Hash
+data QueryPdu = PublishQ URI Base64 
+  | WithdrawQ URI Hash
   deriving (Show, Eq)
 
-data ReplyPdu = PublishR URI | WithdrawR URI
+data ReplyPdu = PublishR URI 
+  | WithdrawR URI
+  | ReportError ParseError
   deriving (Show, Eq)
 
 data ParseError = BadXml String
@@ -54,12 +58,10 @@ data ParseError = BadXml String
   | NoSessionId
   | NoSerial
   | NoHash
+  | HashInSnapshotIsNotAllowed
   | BadURI String
+  | BadBase64 String
   | BadVersion String
   | BadSerial String
   deriving (Eq, Show)
-
-maybeToEither :: e -> Maybe a -> Either e a
-maybeToEither e Nothing  = Left e
-maybeToEither _ (Just a) = Right a
 

@@ -99,8 +99,8 @@ processMessage appState = do
 
 applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
 applyToRepo repo queryXml = do 
-  queryMessage            <- mapParseError $ parseMessage queryXml
-  (newRepo, replyMessage) <- updateRepo repo queryMessage
+  queryMessage               <- mapParseError $ parseMessage queryXml
+  let (newRepo, replyMessage) = updateRepo repo queryMessage
   return (newRepo, createReply replyMessage)
   where 
     mapParseError (Left e)  = Left $ BadMessage e
