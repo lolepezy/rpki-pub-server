@@ -1,14 +1,22 @@
 module RRDP.Repo where
 
+import Data.Either
 import Data.Map as M
 import Data.Set as S
 import Data.UUID as UU
 import Network.URI
+import Control.Monad
+
+import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString.Lazy.Char8  as L
+import qualified Data.ByteString.Char8  as C
+import qualified Data.ByteString.Base64.Lazy as B64
+
 import Text.XML.Light.Output
 import System.Directory
 
 import Types
+import Util
 import RRDP.XML
 
 data RRDPError = NoSnapshot SessionId 
@@ -44,7 +52,7 @@ getSnapshot :: Repository -> RRDPResponse
 getSnapshot (Repository (Snapshot snapshotDef publishes) _) =
   Right . L.pack . ppElement $ snapshotXml snapshotDef publishElements
   where
-      publishElements = [base64Xml base64 . uriXml uri $ publishXml | SnapshotPublish uri base64 <- publishes]
+      publishElements = [base64Xml base64 . uriXml uri $ publishXml | SnapshotPublish uri base64 _ <- publishes]
 
 getDelta :: Repository -> SessionId -> Serial -> RRDPResponse
 getDelta (Repository { deltas = deltas }) sessionId serial @ (Serial deltaNumber) = do
@@ -59,33 +67,52 @@ getDelta (Repository { deltas = deltas }) sessionId serial @ (Serial deltaNumber
 
 
 {- Update repository based on incoming message -} 
-updateRepo :: Repository -> QMessage -> RRDPValue (Repository, RMessage)
-updateRepo r@(Repository 
-               (Snapshot (SnapshotDef v@(Version rVersion) s@(SessionId sessionId) (Serial serial)) publishes) 
-               deltas) (Message (Version mVersion) pdus) =
-  -- TODO Implement proper error generation in case of mismatching hashes
-  Right (newRepo, reply)
+updateRepo :: Repository -> QMessage -> (Repository, RMessage)
+updateRepo repo@(Repository 
+                  (Snapshot (SnapshotDef version sessionId (Serial serial)) publishes) 
+                  deltas) (Message (Version mVersion) pdus) =
+  
+  {- TODO:
+     That needs to be clarified: should we update anything if there're errors? 
+     The standard is pretty vague about it. For now the strategy is to be as 
+     strict as possible: update the repository only if there're no errors.
+   -}
+  case reportErrors of
+    [] -> (newRepo, reply)
+    _  -> (repo, reply)
+
   where
-    newSerial    = serial + 1
-    newRepo      = Repository (Snapshot (SnapshotDef v s (Serial newSerial)) newPublishes) newDeltas
+    newSerial = serial + 1
 
-    reply        = Message (Version mVersion) replies :: Message ReplyPdu
-    replies      = Prelude.map (\m -> case m of  
-                                        PublishQ uri base64 -> PublishR uri
-                                        WithdrawQ uri _     -> WithdrawR uri
-                               ) pdus  
+    -- hash computation can fail in case base64 doesn't contain properly encoded data   
+    newObjects    = [ liftM (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
+    (badHashes, goodHashes) = partitionEithers newObjects
+
+    existingObjects = M.fromList [ (uri, hash) | SnapshotPublish uri _ hash <- publishes ]
+
+    -- delta publish must contain hashes only if it supposed to replace an exising object       
+    deltaP = [ DeltaPublish uri base64 $ M.lookup uri existingObjects 
+             | SnapshotPublish uri base64 hash <- goodHashes ]
     
-    newPublishes = (Prelude.filter (not . shouldBeWithdrawn) publishes) ++ newPublish
-    newPublish   = [ SnapshotPublish uri base64 | PublishQ uri base64 <- pdus ]
+    deltaW       = [ Withdraw uri hash | WithdrawQ uri hash  <- pdus ]
+    newSnapshotP = (Prelude.filter (not . shouldBeWithdrawn) publishes) ++ goodHashes
+      
+    newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
+    newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
     newDeltas    = M.insert newSerial newDelta deltas
-
-    -- TODO compute the hash
-    newDelta     = Delta (DeltaDef v s $ Serial newSerial)
-                         [ DeltaPublish uri base64 Nothing | PublishQ  uri base64 <- pdus ] 
-                         [ Withdraw     uri hash           | WithdrawQ uri hash   <- pdus ]
-
-    -- TODO compare the hash and complain if it differs from the hash in withdraw message
-    shouldBeWithdrawn (SnapshotPublish uri base64) = uri `S.member` urisToWithdraw 
+    newRepo      = Repository newSnapshot newDeltas
+  
+    reply        = Message (Version mVersion) replies :: Message ReplyPdu
+    replies      = snapshotPublishR ++ deltaPublishR ++ deltaWithdrawR ++ reportErrors
+ 
+    -- generate reply
+    snapshotPublishR = [ PublishR    uri | PublishQ uri base64  <- pdus       ]
+    deltaPublishR    = [ PublishR    uri | SnapshotPublish uri _ _ <- goodHashes ]
+    deltaWithdrawR   = [ WithdrawR   uri | Withdraw uri _       <- deltaW     ]
+    reportErrors     = [ ReportError err | err                  <- badHashes  ]
+ 
+    -- filtering of the withdrawn objects
+    shouldBeWithdrawn (SnapshotPublish uri _ _) = uri `S.member` urisToWithdraw 
     urisToWithdraw = S.fromList [ uri | WithdrawQ uri _  <- pdus ]
 
 
@@ -103,12 +130,11 @@ emptyRepo = do
               (SessionId (show uuid))
               (Serial 1)
               )
-            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b")])
+            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b") (Hash "7675675757")])
           M.empty
 
 readRepo :: String -> IO (Either RepoError Repository)
 readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
-
 
 {-
   Repository schema:
