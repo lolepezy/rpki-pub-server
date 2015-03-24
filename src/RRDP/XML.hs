@@ -11,7 +11,10 @@ import           Network.URI
 import           Text.Read
 import           Text.XML.Light
 import           Control.Monad
+import           Data.Either
+
 import           Types
+import           Util
 
 snapshotXml :: SnapshotDef -> [Element] -> Element
 snapshotXml (SnapshotDef version sId serial) publishElements = 
@@ -57,6 +60,15 @@ simplePublishParse contructor maybeUri _ base64 = do
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ contructor uri (Base64 base64)
 
+publishParseWithHashing :: (URI -> Base64 -> Hash -> p) -> 
+                            Maybe String -> Maybe String -> String -> Either ParseError p
+publishParseWithHashing contructor maybeUri _ base64 = do
+    u    <- maybeToEither NoURI maybeUri
+    uri  <- maybeToEither (BadURI u) (parseURI u)
+    hash <- getHash $ Base64 base64
+    return $ contructor uri (Base64 base64) hash
+
+
 hashedPublishParse :: (URI -> Base64 -> Maybe Hash -> p) -> 
                        Maybe String -> Maybe String -> String -> Either ParseError p
 hashedPublishParse constructor maybeUri hash base64 = do
@@ -85,17 +97,17 @@ parsePWElements doc publishC withdrawC = do
                     elName = QName { qName = "publish" },
                     elAttribs = attrs,
                     elContent = [Text CData { cdData = base64 }]
-                  } -> fmap Right (publishC (getAttr "uri" attrs) (getAttr "hash" attrs) (normalize base64))
+                  } -> fmap Left (publishC (getAttr "uri" attrs) (getAttr "hash" attrs) (normalize base64))
 
                 Element { 
                    elName = QName { qName = "withdraw" },
                    elAttribs = attr
-                  } -> fmap Left (withdrawC (getAttr "uri" attr) (getAttr "hash" attr))
+                  } -> fmap Right (withdrawC (getAttr "uri" attr) (getAttr "hash" attr))
 
                 _         -> Left $ UnexpectedElement (strContent element)
             ) $ elChildren doc
 
-    return ([pdu | Right pdu <- pdus], [pdu | Left pdu <- pdus])
+    return $ partitionEithers pdus
     where normalize = filter (\c -> not (c `elem` " \n\t"))
 
 
@@ -109,7 +121,7 @@ parseMessage xml = do
 parseSnapshot :: L.ByteString -> Either ParseError Snapshot
 parseSnapshot xml = do
     (doc, sessionId, version, serial) <- parseCommonAttrs xml
-    (ps, _)   <- parsePWElements doc (simplePublishParse SnapshotPublish) (\_ _ -> Left NoHash)
+    (ps, _)   <- parsePWElements doc (publishParseWithHashing SnapshotPublish) (\_ _ -> Left HashInSnapshotIsNotAllowed)
     return $ Snapshot (SnapshotDef version sessionId serial) ps
 
 parseDelta :: L.ByteString -> Either ParseError Delta
