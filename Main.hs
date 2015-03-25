@@ -7,7 +7,6 @@ import           Control.Concurrent.STM
 import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
-import           Data.String.Interpolate
 import qualified Data.ByteString.Lazy.Char8  as L
 import           Happstack.Server            (ServerPart, simpleHTTP, askRq, 
                                               badRequest, notFound, internalServerError, 
@@ -31,7 +30,8 @@ main :: IO ()
 main = do
     existingRepo <- readRepo repoPath
     case existingRepo of
-      Left e -> die $ [i|Repository at the location #{repoPath} is not found or can not be read, error: #{e}.|]
+      Left e -> die $ "Repository at the location " ++ show repoPath ++ 
+                      " is not found or can not be read, error: " ++ show e ++ "."
       Right repo -> setupWebApp repo
 
 setupWebApp :: Repository -> IO ()
@@ -62,15 +62,17 @@ respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
 respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $ 
-  L.pack $ [i|No delta for session_id=#{sessionId} and serial #{serial}|]
+  L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
   
 respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
-  L.pack $ [i|No snapshot for session_id=#{sessionId}|]
+  L.pack $ "No snapshot for session_id " ++ show sessionId
 
 respondRRDP (Left (BadHash { passed = p, stored = s, uri = u })) = badRequest $ 
-  L.pack $ [i|The replacement for the object #{u} has hash #{s} but is required to have #{p}|]
+  L.pack $ "The replacement for the object " ++ show u ++ " has hash " 
+           ++ show s ++ " but is expected to have hash " ++ show p
 
-respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ [i|Message parse error #{parseError}|]
+respondRRDP (Left (BadMessage parseError)) = badRequest $ 
+  L.pack $ "Message parse error " ++ show parseError
 
  
 processMessage :: TVar Repository -> ServerPart L.ByteString
