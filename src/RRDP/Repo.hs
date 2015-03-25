@@ -84,36 +84,48 @@ updateRepo repo@(Repository
   where
     newSerial = serial + 1
 
-    -- hash computation can fail in case base64 doesn't contain properly encoded data   
-    newObjects    = [ liftM (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
-    (badHashes, goodHashes) = partitionEithers newObjects
-
     existingObjects = M.fromList [ (uri, hash) | SnapshotPublish uri _ hash <- publishes ]
 
-    -- delta publish must contain hashes only if it supposed to replace an exising object       
+    newUri (SnapshotPublish uri _ _) = uri `S.member` newUris 
+    newUris = S.fromList [ case p of
+                             PublishQ uri _  -> uri 
+                             WithdrawQ uri   -> uri
+                         | p <- pdus ]
+
+    -- hash computation can fail in case base64 doesn't contain properly encoded data   
+    newObjects    = [ liftM (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
+    (badlyHashed, wellHashed) = partitionEithers newObjects
+
+    -- delta publish must contain hashes only if it's supposed to replace an exising object       
     deltaP = [ DeltaPublish uri base64 $ M.lookup uri existingObjects 
-             | SnapshotPublish uri base64 hash <- goodHashes ]
-    
-    deltaW       = [ Withdraw uri hash | WithdrawQ uri hash  <- pdus ]
-    newSnapshotP = (Prelude.filter (not . shouldBeWithdrawn) publishes) ++ goodHashes
+             | SnapshotPublish uri base64 hash <- wellHashed ]
+
+    -- separate withdraw elements pointing to non-existinent object from the proper ones
+    (badWithdraws, deltaW) = partitionEithers [ 
+                               case M.lookup uri existingObjects of 
+                                 Just hash -> Right $ Withdraw uri hash
+                                 Nothing   -> Left $ ObjectNotFound uri
+                             | WithdrawQ uri <- pdus ]
+
+    {- We need to remove objects that must be withdrawn, replace the existing 
+       ones and add new ones. In fact that means to remove all that are mentioned
+       in the query and add newly published ones.
+    -}
+    previousPublishes = (Prelude.filter (not . newUri) publishes)
+
+    newSnapshotP = previousPublishes ++ wellHashed
       
     newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
     newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
     newDeltas    = M.insert newSerial newDelta deltas
     newRepo      = Repository newSnapshot newDeltas
   
+     -- generate reply
     reply        = Message (Version mVersion) replies :: Message ReplyPdu
-    replies      = snapshotPublishR ++ deltaPublishR ++ deltaWithdrawR ++ reportErrors
- 
-    -- generate reply
-    snapshotPublishR = [ PublishR    uri | PublishQ uri base64  <- pdus       ]
-    deltaPublishR    = [ PublishR    uri | SnapshotPublish uri _ _ <- goodHashes ]
-    deltaWithdrawR   = [ WithdrawR   uri | Withdraw uri _       <- deltaW     ]
-    reportErrors     = [ ReportError err | err                  <- badHashes  ]
- 
-    -- filtering of the withdrawn objects
-    shouldBeWithdrawn (SnapshotPublish uri _ _) = uri `S.member` urisToWithdraw 
-    urisToWithdraw = S.fromList [ uri | WithdrawQ uri _  <- pdus ]
+    replies      = publishR ++ withdrawR ++ reportErrors
+    publishR     = [ PublishR    uri | SnapshotPublish uri _ _ <- wellHashed  ]
+    withdrawR    = [ WithdrawR   uri | Withdraw uri _          <- deltaW      ]
+    reportErrors = [ ReportError err | err     <- badlyHashed ++ badWithdraws ]
 
 
 
