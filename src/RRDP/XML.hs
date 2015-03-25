@@ -80,9 +80,18 @@ withdrawParse :: (URI -> Hash -> p) ->
                  Maybe String -> Maybe String -> Either ParseError p
 withdrawParse constructor maybeUri maybeHash = do
     u    <- maybeToEither NoURI maybeUri
-    hash <- maybeToEither NoHash maybeHash
     uri  <- maybeToEither (BadURI u) (parseURI u)
+    hash <- maybeToEither NoHash maybeHash
     return $ constructor uri $ Hash hash
+
+withdrawQueryParse :: (URI -> p) -> 
+                      Maybe String -> Maybe String -> Either ParseError p
+withdrawQueryParse constructor maybeUri _ = do
+    u    <- maybeToEither NoURI maybeUri
+    uri  <- maybeToEither (BadURI u) (parseURI u)
+    return $ constructor uri
+
+
 
 parsePWElements :: Element -> 
                    (Maybe String -> Maybe String -> String -> Either ParseError p) ->
@@ -115,7 +124,7 @@ parseMessage :: L.ByteString -> Either ParseError QMessage
 parseMessage xml = do
     doc      <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
     version  <- maybeToEither NoVersion $ lookupAttr (simpleQName "version") $ elAttribs doc
-    (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawParse WithdrawQ)
+    (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawQueryParse WithdrawQ)
     return $ Message (Version (read version)) $ ps ++ ws
 
 parseSnapshot :: L.ByteString -> Either ParseError Snapshot

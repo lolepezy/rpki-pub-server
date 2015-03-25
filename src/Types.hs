@@ -41,7 +41,7 @@ type QMessage = Message QueryPdu
 type RMessage = Message ReplyPdu
 
 data QueryPdu = PublishQ URI Base64 
-  | WithdrawQ URI Hash
+  | WithdrawQ URI
   deriving (Show, Eq)
 
 data ReplyPdu = PublishR URI 
@@ -59,6 +59,7 @@ data ParseError = BadXml String
   | NoSerial
   | NoHash
   | HashInSnapshotIsNotAllowed
+  | ObjectNotFound URI
   | BadURI String
   | BadBase64 String
   | BadVersion String
