@@ -12,8 +12,6 @@ http://datatracker.ietf.org/wg/sidr/charter/
 
 Current TODOs:
 
-* Add msg proper handling 
-  - respond with coresponding publish/withdraw
 
 * Generate notification.xml
 
