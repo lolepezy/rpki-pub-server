@@ -33,6 +33,7 @@ executable rpki-pub-server
                       ,directory >= 1.2
                       ,interpolate >= 0.1
                       ,base64-bytestring >= 1.0
+                      ,base16-bytestring >= 0.1
                       ,cryptohash >= 0.11
 
 
