@@ -17,8 +17,7 @@ import           Types
 import           Util
 
 snapshotXml :: SnapshotDef -> [Element] -> Element
-snapshotXml (SnapshotDef version sId serial) publishElements = 
-  commonXml version sId serial "snapshot" publishElements  
+snapshotXml (SnapshotDef version sId serial) = commonXml version sId serial "snapshot"  
 
 deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
 deltaXml (DeltaDef version sId serial) publishElements withdrawElements = 
@@ -117,7 +116,7 @@ parsePWElements doc publishC withdrawC = do
             ) $ elChildren doc
 
     return $ partitionEithers pdus
-    where normalize = filter (\c -> not (c `elem` " \n\t"))
+    where normalize = filter (`notElem` " \n\t")
 
 
 parseMessage :: L.ByteString -> Either ParseError QMessage
@@ -165,11 +164,13 @@ createReply (Message version pdus) =
       case pdu of
         PublishR uri  -> pduElem "publish" uri
         WithdrawR uri -> pduElem "withdraw" uri
+        ReportError e -> reportErrorElem e
       ) pdus
     }
   where
       printV (Version v) = show v
       pduElem name uri = Elem $ blank_element { elName = simpleQName name, elAttribs = attrs [("uri", show uri)] }
+      reportErrorElem e = Elem $ blank_element { elName = simpleQName "report_error", elAttribs = attrs [("error_code", show e)] }
 
 getAttr :: String -> [Attr] -> Maybe String
 getAttr name = lookupAttr (simpleQName name)

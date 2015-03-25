@@ -7,10 +7,7 @@ import Data.UUID as UU
 import Network.URI
 import Control.Monad
 
-import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString.Lazy.Char8  as L
-import qualified Data.ByteString.Char8  as C
-import qualified Data.ByteString.Base64.Lazy as B64
 
 import Text.XML.Light.Output
 import System.Directory
@@ -21,7 +18,7 @@ import RRDP.XML
 
 data RRDPError = NoSnapshot SessionId 
                | NoDelta SessionId Serial
-               | BadHash { passed :: Hash, stored ::Hash, uri :: URI }
+               | BadHash { passed :: Hash, stored ::Hash, uriW :: URI }
                | BadMessage ParseError
   deriving (Eq, Show)
 
@@ -98,7 +95,7 @@ updateRepo repo@(Repository
 
     -- delta publish must contain hashes only if it's supposed to replace an exising object       
     deltaP = [ DeltaPublish uri base64 $ M.lookup uri existingObjects 
-             | SnapshotPublish uri base64 hash <- wellHashed ]
+             | SnapshotPublish uri base64 _ <- wellHashed ]
 
     -- separate withdraw elements pointing to non-existinent object from the proper ones
     (badWithdraws, deltaW) = partitionEithers [ 
@@ -111,7 +108,7 @@ updateRepo repo@(Repository
        ones and add new ones. In fact that means to remove all that are mentioned
        in the query and add newly published ones.
     -}
-    previousPublishes = (Prelude.filter (not . newUri) publishes)
+    previousPublishes = Prelude.filter (not . newUri) publishes
 
     newSnapshotP = previousPublishes ++ wellHashed
       

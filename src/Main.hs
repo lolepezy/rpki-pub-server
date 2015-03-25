@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings  #-}
-{-# LANGUAGE QuasiQuotes #-}
 
 import System.Exit
 
@@ -9,8 +8,7 @@ import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
 import           Happstack.Server            (ServerPart, simpleHTTP, askRq, 
-                                              badRequest, notFound, internalServerError, 
-                                              dir, method, ok, path)
+                                              badRequest, notFound, dir, method, ok, path)
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
@@ -67,7 +65,7 @@ respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $
 respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
   L.pack $ "No snapshot for session_id " ++ show sessionId
 
-respondRRDP (Left (BadHash { passed = p, stored = s, uri = u })) = badRequest $ 
+respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $ 
   L.pack $ "The replacement for the object " ++ show u ++ " has hash " 
            ++ show s ++ " but is expected to have hash " ++ show p
 
