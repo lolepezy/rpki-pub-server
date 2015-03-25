@@ -4,23 +4,22 @@
 name:                rpki-pub-server
 version:             0.1.0.0
 synopsis:            RPKI publication server written in Haskell.
--- description:         
 homepage:            http://github.com/lolepezy/rpki-pub-server
 license:             BSD2
 license-file:        LICENSE
 author:              Mikhail Puzanov
 maintainer:          misha.puzanov@gmail.com
--- copyright:           
 category:            Network
 build-type:          Simple
--- extra-source-files:  
-cabal-version:       >=1.10
+
+cabal-version:       >= 1.10
 
 executable rpki-pub-server
   main-is:             Main.hs
+  hs-source-dirs:      src
 
-  -- other-modules:       
-  -- other-extensions:    
+  ghc-options:         -O2 -threaded
+
   build-depends:       base >=4.6 && <  4.7
                       ,happstack-server >= 7.4
                       ,network-uri >= 2.6
