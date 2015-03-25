@@ -130,7 +130,8 @@ parseMessage xml = do
 parseSnapshot :: L.ByteString -> Either ParseError Snapshot
 parseSnapshot xml = do
     (doc, sessionId, version, serial) <- parseCommonAttrs xml
-    (ps, _)   <- parsePWElements doc (publishParseWithHashing SnapshotPublish) (\_ _ -> Left HashInSnapshotIsNotAllowed)
+    (ps, _)   <- parsePWElements doc (publishParseWithHashing SnapshotPublish) 
+                   (\_ _ -> Left HashInSnapshotIsNotAllowed)
     return $ Snapshot (SnapshotDef version sessionId serial) ps
 
 parseDelta :: L.ByteString -> Either ParseError Delta
