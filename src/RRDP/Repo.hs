@@ -10,7 +10,7 @@ import Control.Monad
 import qualified Data.ByteString.Lazy.Char8  as L
 
 import Text.XML.Light.Output
-import System.Directory
+import System.Directory.Tree
 
 import Types
 import Util
@@ -148,6 +148,7 @@ readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
 {-
   Repository schema:
 
+  notification.xml
   /x-session-id-1/snapshot.xml
   /x-session-id-1/1/delta.xml
   /x-session-id-1/2/delta.xml
@@ -156,18 +157,19 @@ readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
   ...
   /x-session-id-2/snapshot.xml
   /x-session-id-2/1/delta.xml
-
-
+  ...
+  
 -}
 
-{-
-readRepo1 :: String -> IO (Maybe Repository)
-readRepo1 repoPath = do
-    let realPath = repoPath ++ "/actual"
-    let notification = "notification.xml"
-    dirContent <- getDirectoryContents realPath
-    let sessions = filter (/= notification) dirContent
-    let r = emptyRepo
-    return r
--}
+readRepo1 :: SessionId -> String -> IO (Maybe Repository)
+readRepo1 (SessionId sessionId) repoPath = do
+  (a :/ repoDir) <- readDirectoryWith L.readFile repoPath
+  snapshot       <- readSnapshot repoDir
+  deltas         <- readDeltas repoDir
+  return $ liftM2 Repository snapshot deltas
+  where   
+    readSnapshot :: DirTree s -> IO (Maybe Snapshot)
+    readSnapshot _ = return Nothing  
+    readDeltas :: DirTree s -> IO (Maybe (M.Map Int Delta))
+    readDeltas _ = return Nothing  
 
