@@ -1,10 +1,9 @@
 module Types where
 
 import Network.URI
-import qualified Data.ByteString.Lazy.Char8  as L
 
-newtype Serial = Serial Int deriving (Show, Eq)
-newtype SessionId = SessionId String deriving (Show, Eq)
+newtype Serial = Serial Int deriving (Show, Eq, Ord)
+newtype SessionId = SessionId String deriving (Show, Eq, Ord)
 newtype Hash = Hash String deriving (Show, Eq)
 newtype Version = Version Int deriving (Show, Eq)
 newtype Base64 = Base64 String deriving (Show, Eq)
@@ -20,7 +19,7 @@ data Notification = Notification Version Serial SnapshotDef [DeltaDef]
 
 data Snapshot = Snapshot SnapshotDef [SnapshotPublish]
   deriving (Show, Eq)
-  
+
 data Delta = Delta DeltaDef [DeltaPublish] [Withdraw]
   deriving (Show, Eq)
 
@@ -40,11 +39,11 @@ data Message pdu = Message Version [pdu]
 type QMessage = Message QueryPdu
 type RMessage = Message ReplyPdu
 
-data QueryPdu = PublishQ URI Base64 
+data QueryPdu = PublishQ URI Base64
   | WithdrawQ URI
   deriving (Show, Eq)
 
-data ReplyPdu = PublishR URI 
+data ReplyPdu = PublishR URI
   | WithdrawR URI
   | ReportError ParseError
   deriving (Show, Eq)
@@ -65,4 +64,3 @@ data ParseError = BadXml String
   | BadVersion String
   | BadSerial String
   deriving (Eq, Show)
-

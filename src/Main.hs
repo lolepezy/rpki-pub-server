@@ -7,7 +7,7 @@ import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, simpleHTTP, askRq, 
+import           Happstack.Server            (ServerPart, simpleHTTP, askRq,
                                               badRequest, notFound, dir, method, ok, path)
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
@@ -28,7 +28,7 @@ main :: IO ()
 main = do
     existingRepo <- readRepo repoPath
     case existingRepo of
-      Left e -> die $ "Repository at the location " ++ show repoPath ++ 
+      Left e -> die $ "Repository at the location " ++ show repoPath ++
                       " is not found or can not be read, error: " ++ show e ++ "."
       Right repo -> setupWebApp repo
 
@@ -36,16 +36,16 @@ setupWebApp :: Repository -> IO ()
 setupWebApp repo = do
   appState <- atomically $ newTVar repo
   simpleHTTP nullConf { port = 9999 } $ msum
-    [ dir "message" $ do 
+    [ dir "message" $ do
         method POST
         processMessage appState,
 
-      dir "notification.xml" $ do 
+      dir "notification.xml" $ do
           method GET
           r <- notificationXml appState
           respondRRDP r,
 
-      path $ \sessionId -> dir "snapshot.xml" $ do 
+      path $ \sessionId -> dir "snapshot.xml" $ do
           method GET
           s <- snapshotXmlFile appState sessionId
           respondRRDP s,
@@ -59,20 +59,20 @@ setupWebApp repo = do
 respondRRDP :: RRDPResponse -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
-respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $ 
+respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $
   L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
-  
-respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $ 
+
+respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $
   L.pack $ "No snapshot for session_id " ++ show sessionId
 
-respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $ 
-  L.pack $ "The replacement for the object " ++ show u ++ " has hash " 
+respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
+  L.pack $ "The replacement for the object " ++ show u ++ " has hash "
            ++ show s ++ " but is expected to have hash " ++ show p
 
-respondRRDP (Left (BadMessage parseError)) = badRequest $ 
+respondRRDP (Left (BadMessage parseError)) = badRequest $
   L.pack $ "Message parse error " ++ show parseError
 
- 
+
 processMessage :: TVar Repository -> ServerPart L.ByteString
 processMessage appState = do
     req  <- askRq
@@ -80,12 +80,12 @@ processMessage appState = do
     case body of
       Just rqbody -> respond rqbody
       Nothing     -> badRequest "Request has no body"
-    where        
+    where
       respond rqbody = do
         rr <- liftIO $ getResponse $ unBody rqbody
         case rr of
           Right reply   -> ok reply
-          e @ (Left _ ) -> respondRRDP e                       
+          e @ (Left _ ) -> respondRRDP e
 
       getResponse :: L.ByteString -> IO (Either RRDPError L.ByteString)
       getResponse request = atomically $ do
@@ -93,16 +93,16 @@ processMessage appState = do
             case applyToRepo state request of
               Right (newRepo, reply) -> do
                 writeTVar appState newRepo
-                return $ Right reply 
+                return $ Right reply
               Left e -> return $ Left e
 
 
 applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
-applyToRepo repo queryXml = do 
+applyToRepo repo queryXml = do
   queryMessage               <- mapParseError $ parseMessage queryXml
   let (newRepo, replyMessage) = updateRepo repo queryMessage
   return (newRepo, createReply replyMessage)
-  where 
+  where
     mapParseError (Left e)  = Left $ BadMessage e
     mapParseError (Right r) = Right r
 
@@ -121,4 +121,3 @@ deltaXmlFile :: TVar Repository -> String -> Int -> ServerPart RRDPResponse
 deltaXmlFile repository sessionId deltaNumber = lift . atomically $ do
     repo <- readTVar repository
     return $ getDelta repo (SessionId sessionId) (Serial deltaNumber)
-    

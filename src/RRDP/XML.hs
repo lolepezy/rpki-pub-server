@@ -1,6 +1,6 @@
 module RRDP.XML (
-  snapshotXml, deltaXml, publishXml, withdrawXml, 
-  uriXml, base64Xml, hashXml, 
+  snapshotXml, deltaXml, publishXml, withdrawXml,
+  uriXml, base64Xml, hashXml,
   parseMessage, createReply,
   parseSnapshot, parseDelta
 )
@@ -17,10 +17,10 @@ import           Types
 import           Util
 
 snapshotXml :: SnapshotDef -> [Element] -> Element
-snapshotXml (SnapshotDef version sId serial) = commonXml version sId serial "snapshot"  
+snapshotXml (SnapshotDef version sId serial) = commonXml version sId serial "snapshot"
 
 deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
-deltaXml (DeltaDef version sId serial) publishElements withdrawElements = 
+deltaXml (DeltaDef version sId serial) publishElements withdrawElements =
   commonXml version sId serial "delta" (publishElements ++ withdrawElements)
 
 commonXml :: Version -> SessionId -> Serial -> String -> [Element] -> Element
@@ -52,14 +52,14 @@ hashXml :: Hash -> Element -> Element
 hashXml (Hash hash) (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs [("hash", hash)] }
 
 
-simplePublishParse :: (URI -> Base64 -> p) -> 
+simplePublishParse :: (URI -> Base64 -> p) ->
                       Maybe String -> Maybe String -> String -> Either ParseError p
 simplePublishParse contructor maybeUri _ base64 = do
     u <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ contructor uri (Base64 base64)
 
-publishParseWithHashing :: (URI -> Base64 -> Hash -> p) -> 
+publishParseWithHashing :: (URI -> Base64 -> Hash -> p) ->
                             Maybe String -> Maybe String -> String -> Either ParseError p
 publishParseWithHashing contructor maybeUri _ base64 = do
     u    <- maybeToEither NoURI maybeUri
@@ -68,14 +68,14 @@ publishParseWithHashing contructor maybeUri _ base64 = do
     return $ contructor uri (Base64 base64) hash
 
 
-hashedPublishParse :: (URI -> Base64 -> Maybe Hash -> p) -> 
+hashedPublishParse :: (URI -> Base64 -> Maybe Hash -> p) ->
                        Maybe String -> Maybe String -> String -> Either ParseError p
 hashedPublishParse constructor maybeUri hash base64 = do
     u <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ constructor uri (Base64 base64) (liftM Hash hash)
 
-withdrawParse :: (URI -> Hash -> p) -> 
+withdrawParse :: (URI -> Hash -> p) ->
                  Maybe String -> Maybe String -> Either ParseError p
 withdrawParse constructor maybeUri maybeHash = do
     u    <- maybeToEither NoURI maybeUri
@@ -83,7 +83,7 @@ withdrawParse constructor maybeUri maybeHash = do
     hash <- maybeToEither NoHash maybeHash
     return $ constructor uri $ Hash hash
 
-withdrawQueryParse :: (URI -> p) -> 
+withdrawQueryParse :: (URI -> p) ->
                       Maybe String -> Maybe String -> Either ParseError p
 withdrawQueryParse constructor maybeUri _ = do
     u    <- maybeToEither NoURI maybeUri
@@ -92,7 +92,7 @@ withdrawQueryParse constructor maybeUri _ = do
 
 
 
-parsePWElements :: Element -> 
+parsePWElements :: Element ->
                    (Maybe String -> Maybe String -> String -> Either ParseError p) ->
                    (Maybe String -> Maybe String -> Either ParseError w) ->
                    Either ParseError ([p], [w])
@@ -101,13 +101,13 @@ parsePWElements doc publishC withdrawC = do
        so pdus consists of stuff like "Right Right p" and "Right Left w" -}
     pdus <- mapM (\element ->
             case element of
-                Element { 
+                Element {
                     elName = QName { qName = "publish" },
                     elAttribs = attrs,
                     elContent = [Text CData { cdData = base64 }]
                   } -> fmap Left (publishC (getAttr "uri" attrs) (getAttr "hash" attrs) (normalize base64))
 
-                Element { 
+                Element {
                    elName = QName { qName = "withdraw" },
                    elAttribs = attr
                   } -> fmap Right (withdrawC (getAttr "uri" attr) (getAttr "hash" attr))
@@ -129,7 +129,7 @@ parseMessage xml = do
 parseSnapshot :: L.ByteString -> Either ParseError Snapshot
 parseSnapshot xml = do
     (doc, sessionId, version, serial) <- parseCommonAttrs xml
-    (ps, _)   <- parsePWElements doc (publishParseWithHashing SnapshotPublish) 
+    (ps, _)   <- parsePWElements doc (publishParseWithHashing SnapshotPublish)
                    (\_ _ -> Left HashInSnapshotIsNotAllowed)
     return $ Snapshot (SnapshotDef version sessionId serial) ps
 
@@ -151,8 +151,8 @@ parseCommonAttrs xml = do
     return (doc, SessionId sessionId, Version version, Serial serial)
 
 
-{- 
-   Refactor that to put all the dependencies on the concrete 
+{-
+   Refactor that to put all the dependencies on the concrete
    XML library inside of the RRDP.XML module.
 -}
 createReply :: RMessage -> L.ByteString
@@ -180,4 +180,3 @@ attrs as = [ Attr { attrKey = simpleQName name, attrVal = value } | (name, value
 
 simpleQName :: String -> QName
 simpleQName name = blank_name { qName = name }
-
