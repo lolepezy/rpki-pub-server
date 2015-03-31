@@ -57,8 +57,8 @@ getSnapshot (Repository (Snapshot snapshotDef publishes) _) =
       publishElements = [base64Xml base64 . uriXml uri $ publishXml | SnapshotPublish uri base64 _ <- publishes]
 
 getDelta :: Repository -> SessionId -> Serial -> RRDPResponse
-getDelta (Repository { deltas = deltas }) sessionId serial @ (Serial deltaNumber) = do
-  delta <- maybeToEither (NoDelta sessionId serial) $ M.lookup deltaNumber deltas
+getDelta (Repository { deltas = ds }) sessionId serial @ (Serial deltaNumber) = do
+  delta <- maybeToEither (NoDelta sessionId serial) $ M.lookup deltaNumber ds
   return $ serializeDelta delta
   where
     serializeDelta :: Delta -> L.ByteString
@@ -72,7 +72,7 @@ getDelta (Repository { deltas = deltas }) sessionId serial @ (Serial deltaNumber
 updateRepo :: Repository -> QMessage -> (Repository, RMessage)
 updateRepo repo@(Repository
                   (Snapshot (SnapshotDef version sessionId (Serial serial)) publishes)
-                  deltas) (Message (Version mVersion) pdus) =
+                  existingDeltas) (Message (Version mVersion) pdus) =
 
   {- TODO:
      That needs to be clarified: should we update anything if there're errors?
@@ -119,7 +119,7 @@ updateRepo repo@(Repository
 
     newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
     newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
-    newDeltas    = M.insert newSerial newDelta deltas
+    newDeltas    = M.insert newSerial newDelta existingDeltas
     newRepo      = Repository newSnapshot newDeltas
 
      -- generate reply
@@ -194,15 +194,16 @@ readRepo1 s@(SessionId sessionId) repoPath = do
             ([], parsed)  -> Right $ M.fromList parsed
             (problems, _) -> Left $ Seq $ Prelude.map (uncurry $ BadDelta s) problems
           where
-            dd = [ mapLeft (dSerial,) $ liftM (dSerial,) $ parseDelta fContent
-                 | Dir { name = dName, contents = [ File { name = fName, file = fContent} ] } <- dirContent,
-                   let dSerial = parseSerial dName, isSerial dSerial && fName == "delta.xml" ]
+            dd = do
+              (dName, dContent) <- [ (dName, dContent) | Dir { name = dName, contents = dContent } <- dirContent ]
+              fContent          <- [ fContent | File { name = fName, file = fContent} <- dContent, fName == "delta.xml"]
+              dSerial           <- rights [parseSerial dName]
+              return $ mapLeft (dSerial,) $ liftM (dSerial,) $! parseDelta fContent
 
-        isSerial :: Int -> Bool
-        isSerial _ = True
-
-        parseSerial :: String -> Int
-        parseSerial _ = 1
+        parseSerial :: FileName -> Either ParseError Int
+        parseSerial s = case reads s of
+          [(d,"")] -> Right d
+          _        -> Left $ BadSerial s
 
 
 verifyRepo :: Repository -> Either RRDPError Repository
