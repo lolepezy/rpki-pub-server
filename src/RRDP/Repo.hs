@@ -22,24 +22,27 @@ data RRDPError = NoSnapshot SessionId
                | NoDelta SessionId Serial
                | BadHash { passed :: Hash, stored ::Hash, uriW :: URI }
                | BadMessage ParseError
-               | BadSnapshot SessionId ParseError
-               | BadDelta SessionId Int ParseError
-               | Seq [RRDPError]
   deriving (Eq, Show)
 
-data RepoError = CannotReadNotification
-               | CannotReadSnapshot
-               | CannotReadDelta
+data RepoError = CannotFindSnapshot SessionId
+               | CannotFindDelta SessionId
+               | NonMatchingSessionId
+               | BadRRDPVersion Version
+               | NonContinuousDeltas [Int]
+               | BadSnapshot SessionId ParseError
+               | BadDelta SessionId Int ParseError
+               | RepoESeq [RepoError]
   deriving (Eq, Show)
 
 type RRDPValue r = Either RRDPError r
 
 type RRDPResponse = RRDPValue L.ByteString
 
--- TODO Force snapshot and deltas to have the same session id
+type DeltaMap = M.Map Int Delta
+
 data Repository = Repository {
   snapshost :: Snapshot,
-  deltas :: M.Map Int Delta
+  deltas :: DeltaMap
 } deriving (Show)
 
 data AppState = AppState {
@@ -64,7 +67,7 @@ getDelta (Repository { deltas = ds }) sessionId serial @ (Serial deltaNumber) = 
     serializeDelta :: Delta -> L.ByteString
     serializeDelta (Delta deltaDef ps ws) = L.pack . ppElement $ deltaXml deltaDef pElems wElems
       where
-        pElems  = [maybe id hashXml hash . base64Xml base64 . uriXml uri $ publishXml | DeltaPublish uri base64 hash <- ps]
+        pElems = [maybe id hashXml hash . base64Xml base64 . uriXml uri $ publishXml | DeltaPublish uri base64 hash <- ps]
         wElems = [hashXml hash . uriXml uri $ withdrawXml | Withdraw uri hash <- ws]
 
 
@@ -95,7 +98,7 @@ updateRepo repo@(Repository
                          | p <- pdus ]
 
     -- hash computation can fail in case base64 doesn't contain properly encoded data
-    newObjects    = [ liftM (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
+    newObjects    = [ fmap (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
     (badlyHashed, wellHashed) = partitionEithers newObjects
 
     -- delta publish must contain hashes only if it's supposed to replace an exising object
@@ -148,7 +151,7 @@ emptyRepo = do
           M.empty
 
 readRepo :: String -> IO (Either RepoError Repository)
-readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
+readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") emptyRepo
 
 {-
   Repository schema:
@@ -167,47 +170,63 @@ readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
 -}
 
 
-readRepo1 :: FileName -> SessionId -> IO (Either RRDPError AppState)
-readRepo1 repoPath currentSession = do
+readRepoFromFS :: FileName -> SessionId -> IO (Either RepoError AppState)
+readRepoFromFS repoPath currentSession = do
+  {- Read the whole directory content, each directory corresponds to a session,
+     in most practical cases there will be only one session -}
   (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile repoPath
-  let repositories = [ mapLeft (sId,) $ liftM (sId,) $ readSession sId d
-                     | d@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
-  return $ case partitionEithers repositories of
-             (badRepos, []) -> Left $ Seq $ Prelude.map snd badRepos
+
+  -- read sessions and separate successfull ones from broken ones.
+  let potentialRepositories = [ leftmap (sId,) $ fmap (sId,) $ readSession sId d
+                              | d@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
+
+  {- we don't enforce a restriction for all sessions to be valid,
+     so we only bail out in case of no valid sessions -}
+  return $ case partitionEithers potentialRepositories of
+             (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
              (_, goodRepos) -> Right $ AppState {
                 sessions = M.fromList goodRepos,
                 currentSession = currentSession
              }
   where
-    readSession :: SessionId -> DirTree L.ByteString -> Either RRDPError Repository
+    -- read one directory and try to find snapshot and the sequence of deltas in it
+    readSession :: SessionId -> DirTree L.ByteString -> Either RepoError Repository
     readSession s (Dir { name = _, contents = content }) = do
       snapshot <- readSnapshot content
       deltas   <- readDeltas content
       verifyRepo $ Repository snapshot deltas
       where
-        readSnapshot :: [DirTree L.ByteString] -> Either RRDPError Snapshot
+        {- find exactly one snapshot.xml inside of the assumed session store
+           NOTE: we do the parsing in strict manner to avoid "too many open files" problem -}
+        readSnapshot :: [DirTree L.ByteString] -> Either RepoError Snapshot
         readSnapshot dirContent =
           case [ f | f@File { name = n } <- dirContent, n == "snapshot.xml" ] of
-               []                  -> Left $ NoSnapshot s
-               [File { file = c }] -> mapLeft (BadSnapshot s) $ parseSnapshot c
+               []                  -> Left $ CannotFindSnapshot s
+               [File { file = c }] -> leftmap (BadSnapshot s) $! parseSnapshot c
 
-        readDeltas :: [DirTree L.ByteString] -> Either RRDPError (Map Int Delta)
+        -- find "<serial_number>/delta.xml" inside of the session store
+        readDeltas :: [DirTree L.ByteString] -> Either RepoError DeltaMap
         readDeltas dirContent =
           case partitionEithers deltaList of
+            (_,  [])      -> Left $ CannotFindDelta s
             ([], parsed)  -> Right $ M.fromList parsed
-            (problems, _) -> Left $ Seq $ Prelude.map (uncurry $ BadDelta s) problems
+            (problems, _) -> Left $ RepoESeq $ Prelude.map (uncurry $ BadDelta s) problems
           where
             deltaList = do
               (dName, dContent) <- [ (dName, dContent) | Dir { name = dName, contents = dContent } <- dirContent ]
               fContent          <- [ fContent | File { name = fName, file = fContent} <- dContent, fName == "delta.xml"]
               dSerial           <- rights [parseSerial dName]
-              return $ mapLeft (dSerial,) $ liftM (dSerial,) $! parseDelta fContent
-
-        parseSerial :: FileName -> Either ParseError Int
-        parseSerial s = case reads s of
-          [(d,"")] -> Right d
-          _        -> Left $ BadSerial s
+              return $ leftmap (dSerial,) $ fmap (dSerial,) $! parseDelta fContent
 
 
-verifyRepo :: Repository -> Either RRDPError Repository
-verifyRepo r = Right r
+-- Check some precoditions of the repository consistency
+verifyRepo :: Repository -> Either RepoError Repository
+verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas) =
+  verify matchingSessionId NonMatchingSessionId r >>=
+  verify (version == protocolVersion) (BadRRDPVersion version) >>=
+  verify deltaVersion (NonContinuousDeltas [])
+  where
+    protocolVersion = Version 1
+    deltaList = M.elems _deltas
+    matchingSessionId = Prelude.null [ sId | Delta (DeltaDef _ sId _) _ _ <- deltaList, sId /= sessionId ]
+    deltaVersion      = Prelude.null [ v | Delta (DeltaDef v _ _) _ _ <- deltaList, v /= protocolVersion ]
