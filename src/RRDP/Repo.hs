@@ -45,7 +45,7 @@ data Repository = Repository {
 data AppState = AppState {
   sessions :: Map SessionId Repository,
   currentSession :: SessionId
-}
+} deriving (Show)
 
 
 {- Serialize the current repository elements to XML -}
@@ -167,17 +167,20 @@ readRepo repoPath = return $ maybeToEither CannotReadSnapshot emptyRepo
 -}
 
 
-readRepo1 :: SessionId -> String -> IO (Either RRDPError AppState)
-readRepo1 s@(SessionId sessionId) repoPath = do
-  (a :/ repoDir) <- readDirectoryWith L.readFile repoPath
-  let repository = readSession repoDir
-  return $ liftM (\sessionRepo -> AppState {
-                                    sessions = M.fromList [(s, sessionRepo)],
-                                    currentSession = s
-                                    }) repository
+readRepo1 :: FileName -> SessionId -> IO (Either RRDPError AppState)
+readRepo1 repoPath currentSession = do
+  (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile repoPath
+  let repositories = [ mapLeft (sId,) $ liftM (sId,) $ readSession sId d
+                     | d@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
+  return $ case partitionEithers repositories of
+             (badRepos, []) -> Left $ Seq $ Prelude.map snd badRepos
+             (_, goodRepos) -> Right $ AppState {
+                sessions = M.fromList goodRepos,
+                currentSession = currentSession
+             }
   where
-    readSession :: DirTree L.ByteString -> Either RRDPError Repository
-    readSession (Dir { name = sessionDir, contents = content }) = do
+    readSession :: SessionId -> DirTree L.ByteString -> Either RRDPError Repository
+    readSession s (Dir { name = _, contents = content }) = do
       snapshot <- readSnapshot content
       deltas   <- readDeltas content
       verifyRepo $ Repository snapshot deltas
@@ -190,11 +193,11 @@ readRepo1 s@(SessionId sessionId) repoPath = do
 
         readDeltas :: [DirTree L.ByteString] -> Either RRDPError (Map Int Delta)
         readDeltas dirContent =
-          case partitionEithers dd of
+          case partitionEithers deltaList of
             ([], parsed)  -> Right $ M.fromList parsed
             (problems, _) -> Left $ Seq $ Prelude.map (uncurry $ BadDelta s) problems
           where
-            dd = do
+            deltaList = do
               (dName, dContent) <- [ (dName, dContent) | Dir { name = dName, contents = dContent } <- dirContent ]
               fContent          <- [ fContent | File { name = fName, file = fContent} <- dContent, fName == "delta.xml"]
               dSerial           <- rights [parseSerial dName]
