@@ -47,9 +47,11 @@ data Repository = Repository {
 
 data AppState = AppState {
   sessions :: Map SessionId Repository,
-  currentSession :: SessionId
+  currentSessionId :: SessionId
 } deriving (Show)
 
+getCurrentSession :: AppState -> Maybe Repository
+getCurrentSession AppState { sessions = ss, currentSessionId = sId } = M.lookup sId ss
 
 {- Serialize the current repository elements to XML -}
 
@@ -171,7 +173,7 @@ readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") e
 
 
 readRepoFromFS :: FileName -> SessionId -> IO (Either RepoError AppState)
-readRepoFromFS repoPath currentSession = do
+readRepoFromFS repoPath currentSessionId = do
   {- Read the whole directory content, each directory corresponds to a session,
      in most practical cases there will be only one session -}
   (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile repoPath
@@ -186,7 +188,7 @@ readRepoFromFS repoPath currentSession = do
              (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
              (_, goodRepos) -> Right $ AppState {
                 sessions = M.fromList goodRepos,
-                currentSession = currentSession
+                currentSessionId = currentSessionId
              }
   where
     -- read one directory and try to find snapshot and the sequence of deltas in it

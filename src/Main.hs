@@ -3,6 +3,7 @@
 import System.Exit
 
 import           Control.Concurrent.STM
+import           Control.Applicative
 import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
@@ -12,25 +13,38 @@ import           Happstack.Server            (ServerPart, simpleHTTP, askRq,
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
+import           Options
+
 import           Types
 import           RRDP.Repo
 import           RRDP.XML
-
--- TODO get it from the config of command line
-repoPath :: String
-repoPath = "./repo"
 
 die :: String -> IO a
 die err = do putStrLn err
              exitWith (ExitFailure 1)
 
+data MainOptions = MainOptions {
+  repositoryPathArg :: String,
+  currentSessionArg :: String
+}
+
+instance Options MainOptions where
+   defineOptions = pure MainOptions
+       <*> simpleOption "repo-path" "" "Path to the repository"
+       <*> simpleOption "session" "" "Actual session id"
+
 main :: IO ()
-main = do
-    existingRepo <- readRepo repoPath
+main = runCommand $ \opts args -> do
+    let repoPath = repositoryPathArg opts
+    existingRepo <- readRepoFromFS repoPath (SessionId $ currentSessionArg opts)
     case existingRepo of
       Left e -> die $ "Repository at the location " ++ show repoPath ++
                       " is not found or can not be read, error: " ++ show e ++ "."
-      Right repo -> setupWebApp repo
+      Right appState -> case getCurrentSession appState of
+        Nothing   -> die "Could not find current session in the repository"
+        Just repo -> setupWebApp repo
+
+
 
 setupWebApp :: Repository -> IO ()
 setupWebApp repo = do
