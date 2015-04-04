@@ -7,12 +7,14 @@ import Data.Map as M
 import Data.Set as S
 import Data.UUID as UU
 import Network.URI
-import Control.Monad
 
 import qualified Data.ByteString.Lazy.Char8  as L
 
 import Text.XML.Light.Output
+import System.Directory
 import System.Directory.Tree
+import System.FilePath
+import System.IO.Error
 
 import Types
 import Util
@@ -22,6 +24,9 @@ data RRDPError = NoSnapshot SessionId
                | NoDelta SessionId Serial
                | BadHash { passed :: Hash, stored ::Hash, uriW :: URI }
                | BadMessage ParseError
+               | SnapshotSyncError IOError
+               | DeltaSyncError IOError
+               | InconsistenSerial Int
   deriving (Eq, Show)
 
 data RepoError = CannotFindSnapshot SessionId
@@ -56,21 +61,24 @@ getCurrentSession AppState { sessions = ss, currentSessionId = sId } = M.lookup 
 {- Serialize the current repository elements to XML -}
 
 getSnapshot :: Repository -> RRDPResponse
-getSnapshot (Repository (Snapshot snapshotDef publishes) _) =
-  Right . L.pack . ppElement $ snapshotXml snapshotDef publishElements
-  where
-      publishElements = [base64Xml base64 . uriXml uri $ publishXml | SnapshotPublish uri base64 _ <- publishes]
+getSnapshot (Repository s _) = Right $ serializeSnapshot s
 
 getDelta :: Repository -> SessionId -> Serial -> RRDPResponse
-getDelta (Repository { deltas = ds }) sessionId serial @ (Serial deltaNumber) = do
-  delta <- maybeToEither (NoDelta sessionId serial) $ M.lookup deltaNumber ds
-  return $ serializeDelta delta
+getDelta (Repository { deltas = ds }) sessionId serial @ (Serial deltaNumber) =
+  fmap serializeDelta $ maybeToEither (NoDelta sessionId serial) $ M.lookup deltaNumber ds
+
+
+serializeSnapshot :: Snapshot -> L.ByteString
+serializeSnapshot (Snapshot snapshotDef publishes) =
+  L.pack . ppElement $ snapshotXml snapshotDef publishElements
   where
-    serializeDelta :: Delta -> L.ByteString
-    serializeDelta (Delta deltaDef ps ws) = L.pack . ppElement $ deltaXml deltaDef pElems wElems
-      where
-        pElems = [maybe id hashXml hash . base64Xml base64 . uriXml uri $ publishXml | DeltaPublish uri base64 hash <- ps]
-        wElems = [hashXml hash . uriXml uri $ withdrawXml | Withdraw uri hash <- ws]
+    publishElements = [base64Xml base64 . uriXml uri $ publishXml | SnapshotPublish uri base64 _ <- publishes]
+
+serializeDelta :: Delta -> L.ByteString
+serializeDelta (Delta deltaDef ps ws) = L.pack . ppElement $ deltaXml deltaDef pElems wElems
+  where
+    pElems = [maybe id hashXml hash . base64Xml base64 . uriXml uri $ publishXml | DeltaPublish uri base64 hash <- ps]
+    wElems = [hashXml hash . uriXml uri $ withdrawXml | Withdraw uri hash <- ws]
 
 
 {- Update repository based on incoming message -}
@@ -226,9 +234,37 @@ verifyRepo :: Repository -> Either RepoError Repository
 verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas) =
   verify matchingSessionId NonMatchingSessionId r >>=
   verify (version == protocolVersion) (BadRRDPVersion version) >>=
-  verify deltaVersion (NonContinuousDeltas [])
+  verify deltaVersion (BadRRDPVersion version)
   where
     protocolVersion = Version 1
     deltaList = M.elems _deltas
     matchingSessionId = Prelude.null [ sId | Delta (DeltaDef _ sId _) _ _ <- deltaList, sId /= sessionId ]
     deltaVersion      = Prelude.null [ v | Delta (DeltaDef v _ _) _ _ <- deltaList, v /= protocolVersion ]
+
+
+
+syncToFS :: Repository -> FilePath -> IO (Either RRDPError ())
+syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial)) _) _deltas) repoDir = do
+  catchIOError writeDelta    $ \e -> return $ Left $ DeltaSyncError e
+  catchIOError writeSnapshot $ \e -> return $ Left $ SnapshotSyncError e
+  where
+    snapshotTmpName = "snapshot.xml.tmp"
+    snapshotName    = "snapshot.xml"
+
+    sessionStoreDir = repoDir </> sId
+
+    writeSnapshot = do
+      L.writeFile (sessionStoreDir </> snapshotTmpName) $ serializeSnapshot s
+      renameFile snapshotTmpName snapshotName
+      return $ Right ()
+
+    writeDelta = case deltaBytes of
+      Just d  -> do
+        createDirectoryIfMissing False $ sessionStoreDir </> show serial
+        L.writeFile (sessionStoreDir </> show serial </> "delta.xml") d
+        return $ Right ()
+      Nothing -> return $ Left $ InconsistenSerial serial
+
+    -- TODO: Think about getting rid of Maybe here and how to always
+    -- have a delta
+    deltaBytes  = fmap serializeDelta $ M.lookup serial _deltas
