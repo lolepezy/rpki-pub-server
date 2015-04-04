@@ -35,7 +35,8 @@ executable rpki-pub-server
                       ,base16-bytestring >= 0.1
                       ,cryptohash >= 0.11
                       ,directory-tree >= 0.11
-                      ,options >= 1.2                      
+                      ,filepath >= 1.4
+                      ,options >= 1.2
 
 
   -- hs-source-dirs:
