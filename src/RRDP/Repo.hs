@@ -32,6 +32,7 @@ data RRDPError = NoSnapshot SessionId
 data RepoError = CannotFindSnapshot SessionId
                | CannotFindDelta SessionId
                | NonMatchingSessionId
+               | NotFoundSessionWithId SessionId
                | BadRRDPVersion Version
                | NonContinuousDeltas [Int]
                | BadSnapshot SessionId ParseError
@@ -52,11 +53,10 @@ data Repository = Repository {
 
 data AppState = AppState {
   sessions :: Map SessionId Repository,
-  currentSessionId :: SessionId
+  currentSession :: Repository,
+  repoPath :: String
 } deriving (Show)
 
-getCurrentSession :: AppState -> Maybe Repository
-getCurrentSession AppState { sessions = ss, currentSessionId = sId } = M.lookup sId ss
 
 {- Serialize the current repository elements to XML -}
 
@@ -144,25 +144,6 @@ updateRepo repo@(Repository
 
 
 
-{- IO-related operations -}
-
-emptyRepo :: Maybe Repository
-emptyRepo = do
-    uuid <- UU.fromString "c2cc10e1-57d6-4b6f-9899-38d972112d8c"
-    uri <- parseURI "rsync://host.com/a/b"
-    return $ Repository
-          ( Snapshot
-            (SnapshotDef
-              (Version 1)
-              (SessionId (show uuid))
-              (Serial 1)
-              )
-            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b") (Hash "7675675757")])
-          M.empty
-
-readRepo :: String -> IO (Either RepoError Repository)
-readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") emptyRepo
-
 {-
   Repository schema:
 
@@ -178,8 +159,6 @@ readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") e
   ...
 
 -}
-
-
 readRepoFromFS :: FileName -> SessionId -> IO (Either RepoError AppState)
 readRepoFromFS repoPath currentSessionId = do
   {- Read the whole directory content, each directory corresponds to a session,
@@ -194,11 +173,20 @@ readRepoFromFS repoPath currentSessionId = do
      so we only bail out in case of no valid sessions -}
   return $ case partitionEithers potentialRepositories of
              (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
-             (_, goodRepos) -> Right $ AppState {
-                sessions = M.fromList goodRepos,
-                currentSessionId = currentSessionId
-             }
+             (_, goodRepos) -> createAppState goodRepos currentSessionId
   where
+
+    createAppState :: [(SessionId, Repository)] -> SessionId -> Either RepoError AppState
+    createAppState repos sId = maybeToEither (NotFoundSessionWithId sId) $
+      fmap (\cs -> AppState {
+           sessions = sessionMap,
+           currentSession = cs,
+           repoPath = repoPath
+        }) current
+        where
+          sessionMap = M.fromList repos
+          current = M.lookup sId sessionMap
+
     -- read one directory and try to find snapshot and the sequence of deltas in it
     readSession :: SessionId -> DirTree L.ByteString -> Either RepoError Repository
     readSession s (Dir { name = _, contents = content }) = do
@@ -230,6 +218,7 @@ readRepoFromFS repoPath currentSessionId = do
 
 
 -- Check some precoditions of the repository consistency
+-- TODO Add check for contigous delta range
 verifyRepo :: Repository -> Either RepoError Repository
 verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas) =
   verify matchingSessionId NonMatchingSessionId r >>=
@@ -242,7 +231,7 @@ verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas)
     deltaVersion      = Prelude.null [ v | Delta (DeltaDef v _ _) _ _ <- deltaList, v /= protocolVersion ]
 
 
-
+{- Write one more delta and replace snapshot.xml -}
 syncToFS :: Repository -> FilePath -> IO (Either RRDPError ())
 syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial)) _) _deltas) repoDir = do
   catchIOError writeDelta    $ \e -> return $ Left $ DeltaSyncError e
@@ -268,3 +257,22 @@ syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial))
     -- TODO: Think about getting rid of Maybe here and how to always
     -- have a delta
     deltaBytes  = fmap serializeDelta $ M.lookup serial _deltas
+
+
+{- TODO Remove it after it's not used anymore -}
+emptyRepo :: Maybe Repository
+emptyRepo = do
+    uuid <- UU.fromString "c2cc10e1-57d6-4b6f-9899-38d972112d8c"
+    uri <- parseURI "rsync://host.com/a/b"
+    return $ Repository
+          ( Snapshot
+            (SnapshotDef
+              (Version 1)
+              (SessionId (show uuid))
+              (Serial 1)
+              )
+            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b") (Hash "7675675757")])
+          M.empty
+
+readRepo :: String -> IO (Either RepoError Repository)
+readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") emptyRepo

@@ -16,6 +16,7 @@ import           Happstack.Server.Types
 import           Options
 
 import           Types
+import           Util
 import           RRDP.Repo
 import           RRDP.XML
 
@@ -23,13 +24,13 @@ die :: String -> IO a
 die err = do putStrLn err
              exitWith (ExitFailure 1)
 
-data MainOptions = MainOptions {
+data AppOptions = AppOptions {
   repositoryPathArg :: String,
   currentSessionArg :: String
 }
 
-instance Options MainOptions where
-   defineOptions = pure MainOptions
+instance Options AppOptions where
+   defineOptions = pure AppOptions
        <*> simpleOption "repo-path" "" "Path to the repository"
        <*> simpleOption "session" "" "Actual session id"
 
@@ -40,37 +41,29 @@ main = runCommand $ \opts args -> do
     case existingRepo of
       Left e -> die $ "Repository at the location " ++ show repoPath ++
                       " is not found or can not be read, error: " ++ show e ++ "."
-      Right appState -> case getCurrentSession appState of
-        Nothing   -> die "Could not find current session in the repository"
-        Just repo -> setupWebApp repo
+      Right appState -> setupWebApp appState
 
 
-
-setupWebApp :: Repository -> IO ()
-setupWebApp repo = do
-  appState <- atomically $ newTVar repo
+setupWebApp :: AppState -> IO ()
+setupWebApp appState = do
+  let repository = currentSession appState
+  repositoryState <- atomically $ newTVar repository
   simpleHTTP nullConf { port = 9999 } $ msum
     [ dir "message" $ do
         method POST
-        processMessage appState,
+        processMessage repositoryState $ repoPath appState,
 
-      dir "notification.xml" $ do
-          method GET
-          r <- notificationXml appState
-          respondRRDP r,
+      dir "notification.xml" $ method GET >>
+        notificationXml repositoryState >>= respondRRDP,
 
-      path $ \sessionId -> dir "snapshot.xml" $ do
-          method GET
-          s <- snapshotXmlFile appState sessionId
-          respondRRDP s,
+      path $ \sessionId -> dir "snapshot.xml" $ method GET >>
+        snapshotXmlFile repositoryState sessionId >>= respondRRDP,
 
-      path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ do
-          method GET
-          d <- deltaXmlFile appState sessionId deltaNumber
-          respondRRDP d
+      path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
+        deltaXmlFile repositoryState sessionId deltaNumber >>= respondRRDP
     ]
 
-respondRRDP :: RRDPResponse -> ServerPart L.ByteString
+respondRRDP :: Either RRDPError L.ByteString -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
 
 respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $
@@ -87,27 +80,32 @@ respondRRDP (Left (BadMessage parseError)) = badRequest $
   L.pack $ "Message parse error " ++ show parseError
 
 
-processMessage :: TVar Repository -> ServerPart L.ByteString
-processMessage appState = do
+processMessage :: TVar Repository -> String -> ServerPart L.ByteString
+processMessage repository repoPath = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
       Just rqbody -> respond rqbody
       Nothing     -> badRequest "Request has no body"
     where
+      respond :: RqBody -> ServerPart L.ByteString
       respond rqbody = do
-        rr <- liftIO $ getResponse $ unBody rqbody
-        case rr of
-          Right reply   -> ok reply
-          e @ (Left _ ) -> respondRRDP e
+        _result <- liftIO $ getResponse $ unBody rqbody
+        case _result of
+          Right (reply, repo) -> do
+            syncResult <- liftIO $ syncToFS repo repoPath
+            case syncResult of
+              Left e  -> respondRRDP $ Left e
+              Right _ -> ok reply
+          Left e              -> respondRRDP $ Left e
 
-      getResponse :: L.ByteString -> IO (Either RRDPError L.ByteString)
+      getResponse :: L.ByteString -> IO (Either RRDPError (L.ByteString, Repository))
       getResponse request = atomically $ do
-            state <- readTVar appState
+            state <- readTVar repository
             case applyToRepo state request of
               Right (newRepo, reply) -> do
-                writeTVar appState newRepo
-                return $ Right reply
+                writeTVar repository newRepo
+                return $ Right (reply, newRepo)
               Left e -> return $ Left e
 
 
@@ -121,6 +119,7 @@ applyToRepo repo queryXml = do
     mapParseError (Right r) = Right r
 
 
+-- TODO Generate proper notification.xml
 notificationXml :: TVar Repository -> ServerPart RRDPResponse
 notificationXml repository = lift $ atomically $ do
     repo <- readTVar repository
