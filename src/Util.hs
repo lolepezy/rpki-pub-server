@@ -13,13 +13,16 @@ maybeToEither e Nothing  = Left e
 maybeToEither _ (Just a) = Right a
 
 leftmap :: (a -> c) -> Either a b -> Either c b
-leftmap f (Left l) = Left $ f l
+leftmap f (Left x)  = Left $ f x
 leftmap _ (Right r) = Right r
 
-getHash :: Base64 -> Either ParseError Hash
-getHash (Base64 base64) = case B64.decode $ L.pack base64 of
-   Right b64 -> Right $ Hash . C.unpack . B16.encode . SHA256.hashlazy $ b64
-   Left err -> Left $ BadBase64 err
+getHash64 :: Base64 -> Either ParseError Hash
+getHash64 (Base64 base64) = case B64.decode $ L.pack base64 of
+  Right b64 -> Right $ getHash b64
+  Left err  -> Left $ BadBase64 err
+
+getHash :: L.ByteString -> Hash
+getHash s = Hash . C.unpack . B16.encode . SHA256.hashlazy $ s
 
 parseSerial :: String -> Either ParseError Int
 parseSerial s = case reads s of
