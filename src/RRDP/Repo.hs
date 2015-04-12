@@ -2,6 +2,7 @@
 
 module RRDP.Repo where
 
+import Data.Maybe
 import Data.Either
 import Data.Map as M
 import Data.Set as S
@@ -32,6 +33,7 @@ data RRDPError = NoSnapshot SessionId
 data RepoError = CannotFindSnapshot SessionId
                | CannotFindDelta SessionId
                | NonMatchingSessionId
+               | NonFoundRepoDirectory String
                | NotFoundSessionWithId SessionId
                | BadRRDPVersion Version
                | NonContinuousDeltas [Int]
@@ -51,21 +53,64 @@ data Repository = Repository {
   deltas :: DeltaMap
 } deriving (Show)
 
+-- Serialized representation of the repository
+data SerializedRepo = SerializedRepo {
+  snapshotS :: L.ByteString,
+  deltaS :: M.Map Int L.ByteString,
+  notificationS :: L.ByteString
+} deriving (Show)
+
 data AppState = AppState {
   sessions :: Map SessionId Repository,
   currentSession :: Repository,
-  repoPath :: String
+  repoPath :: String,
+  repoUrlBase :: String,
+  serializedCurrentRepo :: SerializedRepo
 } deriving (Show)
 
 
-{- Serialize the current repository elements to XML -}
+serializeRepo :: Repository -> String -> SerializedRepo
+serializeRepo r@(Repository snapshot _deltas) _repoUrlBase = SerializedRepo {
+  snapshotS     = sSnapshot,
+  deltaS        = sDeltas,
+  notificationS = serializeNotification r _repoUrlBase sSnapshot sDeltas
+} where
+  sSnapshot = serializeSnapshot snapshot
+  sDeltas   = fmap serializeDelta _deltas
 
-getSnapshot :: Repository -> RRDPResponse
-getSnapshot (Repository s _) = Right $ serializeSnapshot s
 
-getDelta :: Repository -> SessionId -> Serial -> RRDPResponse
-getDelta (Repository { deltas = ds }) sessionId serial @ (Serial deltaNumber) =
-  fmap serializeDelta $ maybeToEither (NoDelta sessionId serial) $ M.lookup deltaNumber ds
+serializedDelta :: SerializedRepo -> Int -> Maybe L.ByteString
+serializedDelta serializedRepo deltaNumber = M.lookup deltaNumber $ deltaS serializedRepo
+
+{-
+Example:
+
+<notification xmlns="HTTP://www.ripe.net/rpki/rrdp" version="1" session_id="9df4b597-af9e-4dca-bdda-719cce2c4e28" serial="2">
+    <snapshot uri="HTTP://rpki.ripe.net/rpki-ca/rrdp/EEEA7F7AD96D85BBD1F7274FA7DA0025984A2AF3D5A0538F77BEC732ECB1B068.xml"
+             hash="EEEA7F7AD96D85BBD1F7274FA7DA0025984A2AF3D5A0538F77BEC732ECB1B068"/>
+    <delta serial="2" uri="HTTP://rpki.ripe.net/rpki-ca/rrdp/198BD94315E9372D7F15688A5A61C7BA40D318210CDC799B6D3F9F24831CF21B.xml"
+           hash="198BD94315E9372D7F15688A5A61C7BA40D318210CDC799B6D3F9F24831CF21B"/>
+    <delta serial="1" uri="HTTP://rpki.ripe.net/rpki-ca/rrdp/8DE946FDA8C6A6E431DFE3622E2A3E36B8F477B81FAFCC5E7552CC3350C609CC.xml"
+           hash="8DE946FDA8C6A6E431DFE3622E2A3E36B8F477B81FAFCC5E7552CC3350C609CC"/>
+  </notification>
+-}
+serializeNotification :: Repository -> String -> L.ByteString -> Map Int L.ByteString -> L.ByteString
+serializeNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _) _) _deltas)
+  _repoUrlBase sSnapshot sDeltas = L.pack . ppElement $ notificationXml sd elements
+  where
+    elements = [ snapshotDefElem sUri (getHash sSnapshot)
+                 | sUri <- maybeToList snapshotUri] ++
+               [ deltaDefElem   dUri (getHash sDelta) serial
+               | (serial, _) <- M.toList _deltas,
+                  sDelta     <- maybeToList $ M.lookup serial sDeltas,
+                  dUri       <- maybeToList $ deltaUri serial]
+
+    snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/snapshot.xml"
+    deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/" ++ show s ++ "/delta.xml"
+
+    snapshotDefElem uri hash = uriXml uri . hashXml hash $ mkElem "snapshot"
+    deltaDefElem uri hash serial = uriXml uri . hashXml hash . addAttr [("serial", show serial)] $ mkElem "delta"
+
 
 
 serializeSnapshot :: Snapshot -> L.ByteString
@@ -77,8 +122,8 @@ serializeSnapshot (Snapshot snapshotDef publishes) =
 serializeDelta :: Delta -> L.ByteString
 serializeDelta (Delta deltaDef ps ws) = L.pack . ppElement $ deltaXml deltaDef pElems wElems
   where
-    pElems = [maybe id hashXml hash . base64Xml base64 . uriXml uri $ publishXml | DeltaPublish uri base64 hash <- ps]
-    wElems = [hashXml hash . uriXml uri $ withdrawXml | Withdraw uri hash <- ws]
+    pElems = [uriXml uri . base64Xml base64 . maybe id hashXml hash $ publishXml | DeltaPublish uri base64 hash <- ps]
+    wElems = [uriXml uri . hashXml hash $ withdrawXml| Withdraw uri hash <- ws]
 
 
 {- Update repository based on incoming message -}
@@ -108,7 +153,7 @@ updateRepo repo@(Repository
                          | p <- pdus ]
 
     -- hash computation can fail in case base64 doesn't contain properly encoded data
-    newObjects    = [ fmap (SnapshotPublish uri base64) $ getHash base64 | PublishQ uri base64 <- pdus ]
+    newObjects    = [ fmap (SnapshotPublish uri base64) $ getHash64 base64 | PublishQ uri base64 <- pdus ]
     (badlyHashed, wellHashed) = partitionEithers newObjects
 
     -- delta publish must contain hashes only if it's supposed to replace an exising object
@@ -159,15 +204,18 @@ updateRepo repo@(Repository
   ...
 
 -}
-readRepoFromFS :: FileName -> SessionId -> IO (Either RepoError AppState)
-readRepoFromFS repoPath currentSessionId = do
+readRepoFromFS :: AppOptions -> SessionId -> IO (Either RepoError AppState)
+readRepoFromFS (AppOptions {
+                  repositoryPathOpt = _repoPath,
+                  repositoryBaseUrlOpt = _urlBase
+                }) currentSessionId = do
   {- Read the whole directory content, each directory corresponds to a session,
      in most practical cases there will be only one session -}
-  (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile repoPath
+  (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile _repoPath
 
   -- read sessions and separate successfull ones from broken ones.
-  let potentialRepositories = [ leftmap (sId,) $ fmap (sId,) $ readSession sId d
-                              | d@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
+  let potentialRepositories = [ leftmap (sId,) $ fmap (sId,) $ readSession sId dir
+                              | dir@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
 
   {- we don't enforce a restriction for all sessions to be valid,
      so we only bail out in case of no valid sessions -}
@@ -179,9 +227,11 @@ readRepoFromFS repoPath currentSessionId = do
     createAppState :: [(SessionId, Repository)] -> SessionId -> Either RepoError AppState
     createAppState repos sId = maybeToEither (NotFoundSessionWithId sId) $
       fmap (\cs -> AppState {
-           sessions = sessionMap,
-           currentSession = cs,
-           repoPath = repoPath
+           sessions              = sessionMap,
+           currentSession        = cs,
+           serializedCurrentRepo = serializeRepo cs _urlBase,
+           repoPath              = _repoPath,
+           repoUrlBase           = _urlBase
         }) current
         where
           sessionMap = M.fromList repos
@@ -189,18 +239,20 @@ readRepoFromFS repoPath currentSessionId = do
 
     -- read one directory and try to find snapshot and the sequence of deltas in it
     readSession :: SessionId -> DirTree L.ByteString -> Either RepoError Repository
+    readSession _ (File _ _) = Left $ NonFoundRepoDirectory $ "Wrong path " ++ _repoPath
+    readSession _ (Failed _name exception) = Left $ NonFoundRepoDirectory $ "Error occured for file " ++ _name ++ " " ++ show exception
     readSession s (Dir { name = _, contents = content }) = do
       snapshot <- readSnapshot content
-      deltas   <- readDeltas content
-      verifyRepo $ Repository snapshot deltas
+      _deltas   <- readDeltas content
+      verifyRepo $ Repository snapshot _deltas
       where
         {- find exactly one snapshot.xml inside of the assumed session store
            NOTE: we do the parsing in strict manner to avoid "too many open files" problem -}
         readSnapshot :: [DirTree L.ByteString] -> Either RepoError Snapshot
         readSnapshot dirContent =
           case [ f | f@File { name = n } <- dirContent, n == "snapshot.xml" ] of
-               []                  -> Left $ CannotFindSnapshot s
                [File { file = c }] -> leftmap (BadSnapshot s) $! parseSnapshot c
+               _                   -> Left $ CannotFindSnapshot s
 
         -- find "<serial_number>/delta.xml" inside of the session store
         readDeltas :: [DirTree L.ByteString] -> Either RepoError DeltaMap
@@ -257,6 +309,16 @@ syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial))
     -- TODO: Think about getting rid of Maybe here and how to always
     -- have a delta
     deltaBytes  = fmap serializeDelta $ M.lookup serial _deltas
+
+
+applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
+applyToRepo repo queryXml = do
+  queryMessage               <- mapParseError $ parseMessage queryXml
+  let (newRepo, replyMessage) = updateRepo repo queryMessage
+  return (newRepo, createReply replyMessage)
+  where
+    mapParseError (Left e)  = Left $ BadMessage e
+    mapParseError (Right r) = Right r
 
 
 {- TODO Remove it after it's not used anymore -}

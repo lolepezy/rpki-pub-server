@@ -1,5 +1,6 @@
 module RRDP.XML (
-  snapshotXml, deltaXml, publishXml, withdrawXml,
+  snapshotXml, deltaXml, publishXml, withdrawXml, notificationXml,
+  mkElem, addAttr,
   uriXml, base64Xml, hashXml,
   parseMessage, createReply,
   parseSnapshot, parseDelta
@@ -23,6 +24,9 @@ deltaXml :: DeltaDef -> [Element] -> [Element] -> Element
 deltaXml (DeltaDef version sId serial) publishElements withdrawElements =
   commonXml version sId serial "delta" (publishElements ++ withdrawElements)
 
+notificationXml :: SnapshotDef -> [Element] -> Element
+notificationXml (SnapshotDef version sId serial) elements = commonXml version sId serial "notification" elements
+
 commonXml :: Version -> SessionId -> Serial -> String -> [Element] -> Element
 commonXml (Version version) (SessionId uuid) (Serial serial) elemName elements = blank_element {
   elName = simpleQName elemName,
@@ -35,27 +39,39 @@ commonXml (Version version) (SessionId uuid) (Serial serial) elemName elements =
   elContent = map Elem elements
   }
 
+mkElem :: String -> Element
+mkElem name = blank_element { elName = simpleQName name }
 
-publishXml :: Element
-publishXml = blank_element { elName = simpleQName "publish" }
+mkElemAttr :: String -> [(String, String)] -> Element
+mkElemAttr name _attrs = blank_element { elName = simpleQName name, elAttribs = attrs _attrs }
 
-withdrawXml :: Element
-withdrawXml = blank_element { elName = simpleQName "withdraw" }
+publishXml, withdrawXml :: Element
+publishXml = mkElem "publish"
+withdrawXml = mkElem "withdraw"
+
+addAttr ::  [(String, String)] -> Element -> Element
+addAttr _attrs (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs _attrs }
 
 uriXml :: URI -> Element -> Element
-uriXml uri (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs [("uri", show uri)] }
+uriXml uri xml = addAttr [("uri", show uri)] xml
 
 base64Xml :: Base64 -> Element -> Element
 base64Xml (Base64 base64) xml = xml { elContent = [Text blank_cdata { cdData = base64 }] }
 
 hashXml :: Hash -> Element -> Element
-hashXml (Hash hash) (xml @ Element { elAttribs = a }) = xml { elAttribs = a ++ attrs [("hash", hash)] }
+hashXml (Hash hash) xml = addAttr [("hash", hash)] xml
 
+serialXml :: Int -> Element -> Element
+serialXml serial xml = addAttr [("serial", show serial)] xml
+
+
+
+-- Parsing
 
 simplePublishParse :: (URI -> Base64 -> p) ->
                       Maybe String -> Maybe String -> String -> Either ParseError p
 simplePublishParse contructor maybeUri _ base64 = do
-    u <- maybeToEither NoURI maybeUri
+    u   <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ contructor uri (Base64 base64)
 
@@ -64,7 +80,7 @@ publishParseWithHashing :: (URI -> Base64 -> Hash -> p) ->
 publishParseWithHashing contructor maybeUri _ base64 = do
     u    <- maybeToEither NoURI maybeUri
     uri  <- maybeToEither (BadURI u) (parseURI u)
-    hash <- getHash $ Base64 base64
+    hash <- getHash64 $ Base64 base64
     return $ contructor uri (Base64 base64) hash
 
 
@@ -103,16 +119,16 @@ parsePWElements doc publishC withdrawC = do
             case element of
                 Element {
                     elName = QName { qName = "publish" },
-                    elAttribs = attrs,
+                    elAttribs = _attrs,
                     elContent = [Text CData { cdData = base64 }]
-                  } -> fmap Left (publishC (getAttr "uri" attrs) (getAttr "hash" attrs) (normalize base64))
+                  } -> fmap Left (publishC (getAttr "uri" _attrs) (getAttr "hash" _attrs) (normalize base64))
 
                 Element {
                    elName = QName { qName = "withdraw" },
-                   elAttribs = attr
-                  } -> fmap Right (withdrawC (getAttr "uri" attr) (getAttr "hash" attr))
+                   elAttribs = _attrs
+                  } -> fmap Right (withdrawC (getAttr "uri" _attrs) (getAttr "hash" _attrs))
 
-                _         -> Left $ UnexpectedElement (strContent element)
+                _   -> Left $ UnexpectedElement (strContent element)
             ) $ elChildren doc
 
     return $ partitionEithers pdus
@@ -151,10 +167,6 @@ parseCommonAttrs xml = do
     return (doc, SessionId sessionId, Version version, Serial serial)
 
 
-{-
-   Refactor that to put all the dependencies on the concrete
-   XML library inside of the RRDP.XML module.
--}
 createReply :: RMessage -> L.ByteString
 createReply (Message version pdus) =
   L.pack . ppElement $ blank_element {
@@ -169,8 +181,8 @@ createReply (Message version pdus) =
     }
   where
       printV (Version v) = show v
-      pduElem name uri = Elem $ blank_element { elName = simpleQName name, elAttribs = attrs [("uri", show uri)] }
-      reportErrorElem e = Elem $ blank_element { elName = simpleQName "report_error", elAttribs = attrs [("error_code", show e)] }
+      pduElem name uri  = Elem $ mkElemAttr name [("uri", show uri)]
+      reportErrorElem e = Elem $ mkElemAttr "report_error" [("error_code", show e)]
 
 getAttr :: String -> [Attr] -> Maybe String
 getAttr name = lookupAttr (simpleQName name)
