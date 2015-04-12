@@ -64,3 +64,10 @@ data ParseError = BadXml String
   | BadVersion String
   | BadSerial String
   deriving (Eq, Show)
+
+
+data AppOptions = AppOptions {
+  repositoryPathOpt :: String,
+  repositoryBaseUrlOpt :: String,
+  currentSessionOpt :: String
+}
