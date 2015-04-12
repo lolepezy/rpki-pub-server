@@ -286,16 +286,16 @@ verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas)
 {- Write one more delta and replace snapshot.xml -}
 syncToFS :: Repository -> FilePath -> IO (Either RRDPError ())
 syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial)) _) _deltas) repoDir = do
-  catchIOError writeDelta    $ \e -> return $ Left $ DeltaSyncError e
-  catchIOError writeSnapshot $ \e -> return $ Left $ SnapshotSyncError e
+  _ <- catchIOError writeDelta $ \e -> return $ Left $ DeltaSyncError e
+  catchIOError writeSnapshot   $ \e -> return $ Left $ SnapshotSyncError e
   where
-    snapshotTmpName = "snapshot.xml.tmp"
-    snapshotName    = "snapshot.xml"
+    snapshotTmpName = sessionStoreDir </> "snapshot.xml.tmp"
+    snapshotName    = sessionStoreDir </> "snapshot.xml"
 
     sessionStoreDir = repoDir </> sId
 
     writeSnapshot = do
-      L.writeFile (sessionStoreDir </> snapshotTmpName) $ serializeSnapshot s
+      L.writeFile snapshotTmpName $ serializeSnapshot s
       renameFile snapshotTmpName snapshotName
       return $ Right ()
 
