@@ -99,7 +99,7 @@ serializeNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _)
   _repoUrlBase sSnapshot sDeltas = L.pack . ppElement $ notificationXml sd elements
   where
     elements = [ snapshotDefElem sUri (getHash sSnapshot)
-                 | sUri <- maybeToList snapshotUri] ++
+               | sUri <- maybeToList snapshotUri] ++
                [ deltaDefElem   dUri (getHash sDelta) serial
                | (serial, _) <- M.toList _deltas,
                   sDelta     <- maybeToList $ M.lookup serial sDeltas,
@@ -108,8 +108,8 @@ serializeNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _)
     snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/snapshot.xml"
     deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/" ++ show s ++ "/delta.xml"
 
-    snapshotDefElem uri hash = uriXml uri . hashXml hash $ mkElem "snapshot"
-    deltaDefElem uri hash serial = uriXml uri . hashXml hash . addAttr [("serial", show serial)] $ mkElem "delta"
+    snapshotDefElem uri hash     = uriXml uri . hashXml hash $ mkElem "snapshot"
+    deltaDefElem uri hash serial = uriXml uri . hashXml hash . serialXml serial $ mkElem "delta"
 
 
 

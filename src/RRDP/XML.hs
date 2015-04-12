@@ -1,7 +1,7 @@
 module RRDP.XML (
   snapshotXml, deltaXml, publishXml, withdrawXml, notificationXml,
   mkElem, addAttr,
-  uriXml, base64Xml, hashXml,
+  uriXml, base64Xml, hashXml, serialXml,
   parseMessage, createReply,
   parseSnapshot, parseDelta
 )
