@@ -51,9 +51,9 @@ setupWebApp appState = do
   let serializedRepository = serializedCurrentRepo appState
   repositoryState     <- atomically $ newTVar repository
   serializedRepoState <- atomically $ newTVar serializedRepository
-  simpleHTTP nullConf { port = 9999 } $ msum
+  simpleHTTP nullConf { port = defaultPort } $ msum
     [ dir "message" $ method POST >>
-        (processMessage repositoryState serializedRepoState $ repoPath appState),
+        (processMessage repositoryState serializedRepoState appState),
 
       dir "notification.xml" $ method GET >>
         notificationXml serializedRepoState >>= respondRRDP,
@@ -84,8 +84,8 @@ respondRRDP (Left e) = badRequest $ L.pack $ "Error: " ++ show e
 
 
 
-processMessage :: TVar Repository -> TVar SerializedRepo -> String -> ServerPart L.ByteString
-processMessage repository serializedRepo _repoPath = do
+processMessage :: TVar Repository -> TVar SerializedRepo -> AppState -> ServerPart L.ByteString
+processMessage repository serializedRepo appState = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
@@ -96,9 +96,9 @@ processMessage repository serializedRepo _repoPath = do
       respond rqbody = do
         -- apply changes to in-memory repo first
         _result <- liftIO $ applyChange $ unBody rqbody
+
         mapRrdp _result $ \(reply, repo) -> do
-          -- that apply to the FS storage
-          syncResult <- liftIO $ syncToFS repo _repoPath
+          syncResult <- liftIO $ syncToFS repo $ repoPath appState
           mapRrdp syncResult $ \_ -> ok reply
 
       mapRrdp (Left e) _ = respondRRDP $ Left e
@@ -106,11 +106,11 @@ processMessage repository serializedRepo _repoPath = do
 
       applyChange :: L.ByteString -> IO (Either RRDPError (L.ByteString, Repository))
       applyChange request = atomically $ do
-        state <- readTVar repository
-        case applyToRepo state request of
+        repoState <- readTVar repository
+        case applyToRepo repoState request of
           Right (newRepo, reply) -> do
             writeTVar repository newRepo
-            writeTVar serializedRepo $ serializeRepo newRepo _repoPath
+            writeTVar serializedRepo $ serializeRepo newRepo $ repoUrlBase appState
             return $ Right (reply, newRepo)
           Left  e -> return $ Left e
 
