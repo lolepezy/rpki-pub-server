@@ -6,7 +6,6 @@ import Data.Maybe
 import Data.Either
 import Data.Map as M
 import Data.Set as S
-import Data.UUID as UU
 import Network.URI
 
 import qualified Data.ByteString.Lazy.Char8  as L
@@ -85,7 +84,7 @@ serializedDelta serializedRepo deltaNumber = M.lookup deltaNumber $ deltaS seria
 {-
 Example:
 
-<notification xmlns="HTTP://www.ripe.net/rpki/rrdp" version="1" session_id="9df4b597-af9e-4dca-bdda-719cce2c4e28" serial="2">
+  <notification xmlns="HTTP://www.ripe.net/rpki/rrdp" version="1" session_id="9df4b597-af9e-4dca-bdda-719cce2c4e28" serial="2">
     <snapshot uri="HTTP://rpki.ripe.net/rpki-ca/rrdp/EEEA7F7AD96D85BBD1F7274FA7DA0025984A2AF3D5A0538F77BEC732ECB1B068.xml"
              hash="EEEA7F7AD96D85BBD1F7274FA7DA0025984A2AF3D5A0538F77BEC732ECB1B068"/>
     <delta serial="2" uri="HTTP://rpki.ripe.net/rpki-ca/rrdp/198BD94315E9372D7F15688A5A61C7BA40D318210CDC799B6D3F9F24831CF21B.xml"
@@ -99,11 +98,11 @@ serializeNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _)
   _repoUrlBase sSnapshot sDeltas = L.pack . ppElement $ notificationXml sd elements
   where
     elements = [ snapshotDefElem sUri (getHash sSnapshot)
-               | sUri <- maybeToList snapshotUri] ++
+               | sUri <- maybeToList snapshotUri ] ++
                [ deltaDefElem   dUri (getHash sDelta) serial
                | (serial, _) <- M.toList _deltas,
                   sDelta     <- maybeToList $ M.lookup serial sDeltas,
-                  dUri       <- maybeToList $ deltaUri serial]
+                  dUri       <- maybeToList $ deltaUri serial ]
 
     snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/snapshot.xml"
     deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ sId ++ "/" ++ show s ++ "/delta.xml"
@@ -319,22 +318,3 @@ applyToRepo repo queryXml = do
   where
     mapParseError (Left e)  = Left $ BadMessage e
     mapParseError (Right r) = Right r
-
-
-{- TODO Remove it after it's not used anymore -}
-emptyRepo :: Maybe Repository
-emptyRepo = do
-    uuid <- UU.fromString "c2cc10e1-57d6-4b6f-9899-38d972112d8c"
-    uri <- parseURI "rsync://host.com/a/b"
-    return $ Repository
-          ( Snapshot
-            (SnapshotDef
-              (Version 1)
-              (SessionId (show uuid))
-              (Serial 1)
-              )
-            [SnapshotPublish uri (Base64 "kjbrh9f835f98b5f98f89b0897ewrb07b5bero34b") (Hash "7675675757")])
-          M.empty
-
-readRepo :: String -> IO (Either RepoError Repository)
-readRepo repoPath = return $ maybeToEither (CannotFindSnapshot $ SessionId "") emptyRepo
