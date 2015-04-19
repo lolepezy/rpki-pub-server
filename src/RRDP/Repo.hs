@@ -26,7 +26,7 @@ data RRDPError = NoSnapshot SessionId
                | BadMessage ParseError
                | SnapshotSyncError IOError
                | DeltaSyncError IOError
-               | InconsistenSerial Int
+               | InconsistentSerial Int
   deriving (Eq, Show)
 
 data RepoError = CannotFindSnapshot SessionId
@@ -303,7 +303,7 @@ syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial))
         createDirectoryIfMissing False $ sessionStoreDir </> show serial
         L.writeFile (sessionStoreDir </> show serial </> "delta.xml") d
         return $ Right ()
-      Nothing -> return $ Left $ InconsistenSerial serial
+      Nothing -> return $ Left $ InconsistentSerial serial
 
     -- TODO: Think about getting rid of Maybe here and how to always
     -- have a delta
