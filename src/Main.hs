@@ -8,7 +8,7 @@ import           Control.Monad               (msum)
 import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.Trans.Class   (lift)
 import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, simpleHTTP, askRq,
+import           Happstack.Server            (ServerPart, simpleHTTP, askRq, setHeaderM,
                                               badRequest, notFound, dir, method, ok, path)
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
@@ -53,17 +53,25 @@ setupWebApp appState = do
   serializedRepoState <- atomically $ newTVar serializedRepository
   simpleHTTP nullConf { port = defaultPort } $ msum
     [ dir "message" $ method POST >>
-        (processMessage repositoryState serializedRepoState appState),
+        (rpkiContentType $ processMessage repositoryState serializedRepoState appState),
 
       dir "notification.xml" $ method GET >>
-        notificationXml serializedRepoState >>= respondRRDP,
+        (rrdpContentType $ notificationXml serializedRepoState >>= respondRRDP),
 
       path $ \sessionId -> dir "snapshot.xml" $ method GET >>
-        snapshotXmlFile serializedRepoState sessionId >>= respondRRDP,
+        (rrdpContentType $ snapshotXmlFile serializedRepoState sessionId >>= respondRRDP),
 
       path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
-        deltaXmlFile serializedRepoState sessionId deltaNumber >>= respondRRDP
+        (rrdpContentType $ deltaXmlFile serializedRepoState sessionId deltaNumber >>= respondRRDP)
     ]
+
+
+rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
+rpkiContentType response = setHeaderM "Content-Type" "application/rpki-publication" >> response
+
+-- TODO Set the proper content type for XML files we serve
+rrdpContentType response = setHeaderM "Content-Type" "text/xml" >> response
+
 
 respondRRDP :: Either RRDPError L.ByteString -> ServerPart L.ByteString
 respondRRDP (Right response) = ok response
@@ -76,9 +84,9 @@ respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $
 
 respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
   L.pack $ "The replacement for the object " ++ show u ++ " has hash "
-           ++ show s ++ " but is expected to have hash " ++ show p
-respondRRDP (Left (BadMessage parseError)) = badRequest $
-  L.pack $ "Message parse error " ++ show parseError
+               ++ show s ++ " but is expected to have hash " ++ show p
+
+respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ "Message parse error " ++ show parseError
 
 respondRRDP (Left e) = badRequest $ L.pack $ "Error: " ++ show e
 
