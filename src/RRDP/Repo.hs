@@ -33,6 +33,7 @@ data RepoError = CannotFindSnapshot SessionId
                | CannotFindDelta SessionId
                | NonMatchingSessionId
                | NonFoundRepoDirectory String
+               | CouldNotReadRepoDirectory String
                | NotFoundSessionWithId SessionId
                | BadRRDPVersion Version
                | NonContinuousDeltas [Int]
@@ -207,21 +208,29 @@ readRepoFromFS :: AppOptions -> SessionId -> IO (Either RepoError AppState)
 readRepoFromFS (AppOptions {
                   repositoryPathOpt = _repoPath,
                   repositoryBaseUrlOpt = _urlBase
-                }) currentSessionId = do
+                }) currentSessionId =
+
   {- Read the whole directory content, each directory corresponds to a session,
      in most practical cases there will be only one session -}
-  (_ :/ Dir { contents = repoDirContent } ) <- readDirectoryWith L.readFile _repoPath
+  readRepo =<< readDirectoryWith L.readFile _repoPath
 
-  -- read sessions and separate successfull ones from broken ones.
-  let potentialRepositories = [ leftmap (sId,) $ fmap (sId,) $ readSession sId dir
-                              | dir@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
-
-  {- we don't enforce a restriction for all sessions to be valid,
-     so we only bail out in case of no valid sessions -}
-  return $ case partitionEithers potentialRepositories of
-             (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
-             (_, goodRepos) -> createAppState goodRepos currentSessionId
   where
+
+    readRepo :: AnchoredDirTree L.ByteString -> IO (Either RepoError AppState)
+    readRepo (_ :/ Dir { contents = repoDirContent } ) = do
+      -- read sessions and separate successfull ones from broken ones.
+      let potentialRepositories = [ leftmap (sId,) $ fmap (sId,) $ readSession sId dir
+                                  | dir@Dir { name = sessionId } <- repoDirContent, let sId = SessionId sessionId ]
+
+      {- we don't enforce a restriction for all sessions to be valid,
+         so we only bail out in case of no valid sessions -}
+      return $ case partitionEithers potentialRepositories of
+                 ([],       []) -> Left $ CouldNotReadRepoDirectory _repoPath
+                 (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
+                 (_, goodRepos) -> createAppState goodRepos currentSessionId
+
+    -- it's not a directory (a file or a failure)
+    readRepo _ = return $ Left $ CouldNotReadRepoDirectory _repoPath
 
     createAppState :: [(SessionId, Repository)] -> SessionId -> Either RepoError AppState
     createAppState repos sId = maybeToEither (NotFoundSessionWithId sId) $
@@ -234,7 +243,7 @@ readRepoFromFS (AppOptions {
         }) current
         where
           sessionMap = M.fromList repos
-          current = M.lookup sId sessionMap
+          current    = M.lookup sId sessionMap
 
     -- read one directory and try to find snapshot and the sequence of deltas in it
     readSession :: SessionId -> DirTree L.ByteString -> Either RepoError Repository
@@ -242,11 +251,12 @@ readRepoFromFS (AppOptions {
     readSession _ (Failed _name exception) = Left $ NonFoundRepoDirectory $ "Error occured for file " ++ _name ++ " " ++ show exception
     readSession s (Dir { name = _, contents = content }) = do
       snapshot <- readSnapshot content
-      _deltas   <- readDeltas content
+      _deltas  <- readDeltas content
       verifyRepo $ Repository snapshot _deltas
       where
         {- find exactly one snapshot.xml inside of the assumed session store
-           NOTE: we do the parsing in strict manner to avoid "too many open files" problem -}
+           TODO Find out if we really do the parsing in strict manner to
+                avoid "too many open files" problem -}
         readSnapshot :: [DirTree L.ByteString] -> Either RepoError Snapshot
         readSnapshot dirContent =
           case [ f | f@File { name = n } <- dirContent, n == "snapshot.xml" ] of

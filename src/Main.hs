@@ -40,7 +40,7 @@ main :: IO ()
 main = runCommand $ \opts _ -> do
     existingRepo <- readRepoFromFS opts (SessionId $ currentSessionOpt opts)
     case existingRepo of
-      Left e -> die $ "Repository at the location " ++ show repoPath ++
+      Left e -> die $ "Repository at the location " ++ show (repositoryPathOpt opts) ++
                       " is not found or can not be read, error: " ++ show e ++ "."
       Right appState -> setupWebApp appState
 
