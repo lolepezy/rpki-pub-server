@@ -267,7 +267,6 @@ readRepoFromFS (AppOptions {
         readDeltas :: [DirTree L.ByteString] -> Either RepoError DeltaMap
         readDeltas dirContent =
           case partitionEithers deltaList of
-            (_,  [])      -> Left $ CannotFindDelta s
             ([], parsed)  -> Right $ M.fromList parsed
             (problems, _) -> Left $ RepoESeq $ Prelude.map (uncurry $ BadDelta s) problems
           where
