@@ -13,11 +13,12 @@ RUN cd /opt/rpki-pub-server && cabal install --only-dependencies -j4
 ADD ./src /opt/rpki-pub-server/src
 ADD ./repo /opt/rpki-pub-server/repo
 ADD ./LICENSE /opt/rpki-pub-server/LICENSE
-RUN cd /opt/rpki-pub-server/ && cabal install
+
+RUN cd /opt/rpki-pub-server/ && cabal clean && cabal install
 
 # Add installed cabal executables to PATH
 ENV PATH /root/.cabal/bin:$PATH
 
 # Default Command for Container
 WORKDIR /opt/rpki-pub-server/
-CMD ["rpki-pub-server --repo-path=/opt/rpki-pub-server/repo --session=9df4b597-af9e-4dca-bdda-719cce2c4e28"]
+CMD ["rpki-pub-server", "--repo-path=/opt/rpki-pub-server/repo", "--session=9df4b597-af9e-4dca-bdda-719cce2c4e28"]
