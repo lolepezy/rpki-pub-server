@@ -3,15 +3,16 @@ FROM haskell:7.8
 RUN cabal update
 
 # Add .cabal file
-ADD ../rpki-pub-server.cabal /opt/rpki-pub-server/rpki-pub-server.cabal
+ADD ./rpki-pub-server.cabal /opt/rpki-pub-server/rpki-pub-server.cabal
 
 # Docker will cache this command as a layer, freeing us up to
 # modify source code without re-installing dependencies
 RUN cd /opt/rpki-pub-server && cabal install --only-dependencies -j4
 
 # Add and Install Application Code
-ADD ../src /opt/rpki-pub-server/src
-ADD ../repo /opt/rpki-pub-server/repo
+ADD ./src /opt/rpki-pub-server/src
+ADD ./repo /opt/rpki-pub-server/repo
+ADD ./LICENSE /opt/rpki-pub-server/LICENSE
 RUN cd /opt/rpki-pub-server/ && cabal install
 
 # Add installed cabal executables to PATH
