@@ -20,15 +20,15 @@ Current TODOs:
 To launch a test server in the Docker image issue in the project directory:
 
 ### Install docker if needed
-brew install boot2docker
-boot2docker init
-boot2docker up
-$(boot2docker shellinit)
+* brew install boot2docker
+* boot2docker init
+* boot2docker up
+* $(boot2docker shellinit)
 
 set the environment variables it suggests you to set and run
 
-docker build --tag=rpki/pub-server.0.1 .
-docker run --publish=9999:9999 rpki/pub-server.0.1
+* docker build --tag=rpki/pub-server.0.1 .
+* docker run --publish=9999:9999 rpki/pub-server.0.1
 
 It will run the test server image, listening on the port 9999,
 so it's possible to use it as something like
