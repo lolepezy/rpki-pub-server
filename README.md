@@ -19,7 +19,7 @@ Current TODOs:
 
 To launch a test server in the Docker image issue in the project directory:
 
-### Install docker if needed
+* install docker if needed
 * brew install boot2docker
 * boot2docker init
 * boot2docker up
