@@ -13,6 +13,7 @@ import           Happstack.Server            (ServerPart, simpleHTTP, askRq, set
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
+import qualified Data.Text as T
 import           Options
 
 import           Types
@@ -38,11 +39,12 @@ instance Options AppOptions where
 
 main :: IO ()
 main = runCommand $ \opts _ -> do
-    existingRepo <- readRepoFromFS opts (SessionId $ currentSessionOpt opts)
+    existingRepo <- readRepoFromFS opts (SessionId $ T.pack $ currentSessionOpt opts)
     case existingRepo of
       Left e -> die $ "Repository at the location " ++ show (repositoryPathOpt opts) ++
                       " is not found or can not be read, error: " ++ show e ++ "."
-      Right appState -> setupWebApp appState
+      Right appState ->
+        print $ "1111" ++ repoPath appState --setupWebApp appState
 
 
 setupWebApp :: AppState -> IO ()
@@ -82,9 +84,9 @@ respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $
 respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $
   L.pack $ "No snapshot for session_id " ++ show sessionId
 
-respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
-  L.pack $ "The replacement for the object " ++ show u ++ " has hash "
-               ++ show s ++ " but is expected to have hash " ++ show p
+-- respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
+--   L.pack $ "The replacement for the object " ++ show u ++ " has hash "
+--                ++ show s ++ " but is expected to have hash " ++ show p
 
 respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ "Message parse error " ++ show parseError
 
@@ -136,5 +138,5 @@ snapshotXmlFile serializedRepo sessionId = lift $ atomically $ do
 deltaXmlFile :: TVar SerializedRepo -> String -> Int -> ServerPart RRDPResponse
 deltaXmlFile serializedRepo sessionId deltaNumber = lift $ atomically $ do
     repo <- readTVar serializedRepo
-    return $ maybeToEither (NoDelta (SessionId sessionId) (Serial deltaNumber)) $
+    return $ maybeToEither (NoDelta (SessionId $ T.pack sessionId) (Serial deltaNumber)) $
              serializedDelta repo deltaNumber

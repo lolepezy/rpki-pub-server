@@ -7,7 +7,7 @@ module RRDP.XML (
 )
 where
 
-import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.ByteString.Char8 as L
 import           Network.URI
 import           Text.Read
 import           Text.XML.Light
@@ -56,7 +56,7 @@ uriXml :: URI -> Element -> Element
 uriXml uri xml = addAttr [("uri", show uri)] xml
 
 base64Xml :: Base64 -> Element -> Element
-base64Xml (Base64 base64) xml = xml { elContent = [Text blank_cdata { cdData = base64 }] }
+base64Xml (Base64 base64) xml = xml { elContent = [Text blank_cdata { cdData = L.unpack base64 }] }
 
 hashXml :: Hash -> Element -> Element
 hashXml (Hash hash) xml = addAttr [("hash", hash)] xml
@@ -69,14 +69,14 @@ serialXml serial xml = addAttr [("serial", show serial)] xml
 -- Parsing
 
 simplePublishParse :: (URI -> Base64 -> p) ->
-                      Maybe String -> Maybe String -> String -> Either ParseError p
+                      Maybe String -> Maybe String -> L.ByteString -> Either ParseError p
 simplePublishParse contructor maybeUri _ base64 = do
     u   <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
     return $ contructor uri (Base64 base64)
 
 publishParseWithHashing :: (URI -> Base64 -> Hash -> p) ->
-                            Maybe String -> Maybe String -> String -> Either ParseError p
+                            Maybe String -> Maybe String -> L.ByteString -> Either ParseError p
 publishParseWithHashing contructor maybeUri _ base64 = do
     u    <- maybeToEither NoURI maybeUri
     uri  <- maybeToEither (BadURI u) (parseURI u)
@@ -85,7 +85,7 @@ publishParseWithHashing contructor maybeUri _ base64 = do
 
 
 hashedPublishParse :: (URI -> Base64 -> Maybe Hash -> p) ->
-                       Maybe String -> Maybe String -> String -> Either ParseError p
+                       Maybe String -> Maybe String -> L.ByteString -> Either ParseError p
 hashedPublishParse constructor maybeUri hash base64 = do
     u <- maybeToEither NoURI maybeUri
     uri <- maybeToEither (BadURI u) (parseURI u)
@@ -99,17 +99,9 @@ withdrawParse constructor maybeUri maybeHash = do
     hash <- maybeToEither NoHash maybeHash
     return $ constructor uri $ Hash hash
 
-withdrawQueryParse :: (URI -> p) ->
-                      Maybe String -> Maybe String -> Either ParseError p
-withdrawQueryParse constructor maybeUri _ = do
-    u    <- maybeToEither NoURI maybeUri
-    uri  <- maybeToEither (BadURI u) (parseURI u)
-    return $ constructor uri
-
-
 
 parsePWElements :: Element ->
-                   (Maybe String -> Maybe String -> String -> Either ParseError p) ->
+                   (Maybe String -> Maybe String -> L.ByteString -> Either ParseError p) ->
                    (Maybe String -> Maybe String -> Either ParseError w) ->
                    Either ParseError ([p], [w])
 parsePWElements doc publishC withdrawC = do
@@ -121,7 +113,7 @@ parsePWElements doc publishC withdrawC = do
                     elName = QName { qName = "publish" },
                     elAttribs = _attrs,
                     elContent = [Text CData { cdData = base64 }]
-                  } -> fmap Left (publishC (getAttr "uri" _attrs) (getAttr "hash" _attrs) (normalize base64))
+                  } -> fmap Left (publishC (getAttr "uri" _attrs) (getAttr "hash" _attrs) (normalize $ L.pack base64))
 
                 Element {
                    elName = QName { qName = "withdraw" },
@@ -132,14 +124,15 @@ parsePWElements doc publishC withdrawC = do
             ) $ elChildren doc
 
     return $ partitionEithers pdus
-    where normalize = filter (`notElem` " \n\t")
+    -- where normalize = L.filter (\c -> c /= ' ' && c /= '\n' && c /= '\t')
+    where normalize = L.filter (`notElem` " \n\t")
 
 
 parseMessage :: L.ByteString -> Either ParseError QMessage
 parseMessage xml = do
     doc      <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
     version  <- maybeToEither NoVersion $ lookupAttr (simpleQName "version") $ elAttribs doc
-    (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawQueryParse WithdrawQ)
+    (ps, ws) <- parsePWElements doc (simplePublishParse PublishQ) (withdrawParse WithdrawQ)
     return $ Message (Version (read version)) $ ps ++ ws
 
 parseSnapshot :: L.ByteString -> Either ParseError Snapshot
@@ -158,7 +151,7 @@ parseDelta xml = do
 parseCommonAttrs :: L.ByteString
                       -> Either ParseError (Element, SessionId, Version, Serial)
 parseCommonAttrs xml = do
-    doc       <- maybeToEither (BadXml $ L.unpack xml) (parseXMLDoc xml)
+    doc       <- maybeToEither (BadXml $ L.unpack xml) $ parseXMLDoc xml
     sVersion  <- maybeToEither NoVersion $ getAttr "version" $ elAttribs doc
     sessionId <- maybeToEither NoSessionId $ getAttr "session_id" $ elAttribs doc
     sSerial   <- maybeToEither NoSerial $ getAttr "serial" $ elAttribs doc
