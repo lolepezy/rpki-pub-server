@@ -126,6 +126,11 @@ updateRepo repo@(Repository
     existingHash uri = M.lookup uri existingObjects
 
     changes = [
+      let
+        withHashCheck uri queryHash storedHash f
+            | queryHash == storedHash = f
+            | otherwise = Wrong $ BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+        in
       case p of
         PublishQ uri base64 Nothing ->
           case existingHash uri of
@@ -135,18 +140,11 @@ updateRepo repo@(Repository
         PublishQ uri base64 (Just hash) ->
           case existingHash uri of
             Nothing -> Wrong $ ObjectNotFound uri
-            Just h  -> if h == hash then
-                         Update (uri, base64, hash)
-                       else
-                         Wrong $ BadHash { passed = hash, stored = h, uriW = uri }
-
+            Just h  -> withHashCheck uri hash h $ Update (uri, base64, hash)
         WithdrawQ uri hash ->
           case existingHash uri of
             Nothing -> Wrong $ ObjectNotFound uri
-            Just h  -> if h == hash then
-                         Delete (uri, hash)
-                       else
-                         Wrong $ BadHash { passed = hash, stored = h, uriW = uri }
+            Just h  -> withHashCheck uri hash h $ Delete (uri, hash)
 
       | p <- pdus ]
 
