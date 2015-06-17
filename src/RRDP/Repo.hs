@@ -158,7 +158,9 @@ updateRepo repo@(Repository
 
     deltaW = [ Withdraw uri hash | Delete (uri, hash) <- changes ]
 
-    newUrls  = S.fromList [ uri | Publish uri _ _ <- deltaP ]
+    newUrls  = S.fromList $
+                 [ uri | Publish uri _ _ <- deltaP ] ++
+                 [ uri | Withdraw uri _  <- deltaW ]
     onlyOldObjects = Prelude.filter oldObject existingPublishes
       where oldObject (Publish uri _ _) = not $ uri `S.member` newUrls
 
@@ -276,7 +278,7 @@ verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas)
     protocolVersion = Version 1
     deltaList = M.elems _deltas
     matchingSessionId = Prelude.null [ sId | Delta (DeltaDef _ sId _) _ _ <- deltaList, sId /= sessionId ]
-    deltaVersion      = Prelude.null [ v | Delta (DeltaDef v _ _) _ _ <- deltaList, v /= protocolVersion ]
+    deltaVersion      = Prelude.null [ v   | Delta (DeltaDef v _ _) _ _   <- deltaList, v   /= protocolVersion ]
 
 
 {- Write one more delta and replace snapshot.xml -}
