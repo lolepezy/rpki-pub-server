@@ -43,16 +43,19 @@ main = runCommand $ \opts _ -> do
     case existingRepo of
       Left e -> die $ "Repository at the location " ++ show (repositoryPathOpt opts) ++
                       " is not found or can not be read, error: " ++ show e ++ "."
-      Right appState ->
-        print $ "1111" ++ repoPath appState --setupWebApp appState
+      Right appState -> setupWebApp appState
+        -- print $ "1111" ++ repoPath appState --setupWebApp appState
 
 
 setupWebApp :: AppState -> IO ()
 setupWebApp appState = do
   let repository           = currentSession appState
   let serializedRepository = serializedCurrentRepo appState
-  repositoryState     <- atomically $ newTVar repository
-  serializedRepoState <- atomically $ newTVar serializedRepository
+  (repositoryState, serializedRepoState) <- atomically $ do
+     rep    <- newTVar repository
+     serRep <- newTVar serializedRepository
+     return (rep, serRep)
+
   simpleHTTP nullConf { port = defaultPort } $ msum
     [ dir "message" $ method POST >>
         (rpkiContentType $ processMessage repositoryState serializedRepoState appState),
