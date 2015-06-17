@@ -42,11 +42,8 @@ verify condition e x = if condition then Right x else Left e
 text2Lbs :: T.Text -> L.ByteString
 text2Lbs = L.fromStrict . TE.encodeUtf8
 
-s2l :: S.ByteString -> L.ByteString
-s2l = L.fromStrict
-
-l2s :: L.ByteString -> S.ByteString
-l2s = S.concat . L.toChunks
+base64bs :: Base64 -> S.ByteString
+base64bs (Base64 b64 _) = strict . B64.encode $ b64
 
 class BString s where
   lazy :: s -> L.ByteString
@@ -56,12 +53,12 @@ class BString s where
 
 instance BString L.ByteString where
   lazy = id
-  strict = l2s
+  strict = S.concat . L.toChunks
   pack = L.pack
   text = L.fromStrict . TE.encodeUtf8
 
 instance BString S.ByteString where
-  lazy = s2l
+  lazy = L.fromStrict
   strict = id
   pack = S.pack
   text = TE.encodeUtf8
