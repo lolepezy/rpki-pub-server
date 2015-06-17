@@ -50,11 +50,11 @@ parseUri attrs = do
   u   <- U.maybeToEither NoURI $ getAttr attrs "uri"
   U.maybeToEither (BadURI u) (parseURI $ T.unpack u)
 
-parseVersion :: [(T.Text, T.Text)] -> Either ParseError Version
-parseVersion attrs = do
+parseVersion :: [(T.Text, T.Text)] -> T.Text -> Either ParseError Version
+parseVersion attrs correctVersion = do
   sVersion  <- U.maybeToEither NoVersion $ getAttr attrs "version"
-  vsVersion <- U.verify (sVersion == "1") (BadVersion sVersion) sVersion
-  version   <- U.maybeToEither (BadVersion sVersion) (TR.readMaybe $ T.unpack vsVersion)
+  vsVersion <- U.verify (sVersion == correctVersion) (BadVersion sVersion) sVersion
+  version   <- U.maybeToEither (BadVersion sVersion) (TR.readMaybe $ T.unpack sVersion)
   return $ Version version
 
 
@@ -101,7 +101,7 @@ parseGeneric xml extract = case err of
 
 parseMessage :: LBS.ByteString -> Either ParseError QMessage
 parseMessage xml = parseGeneric xml $ \attrs children -> do
-  version  <- parseVersion attrs
+  version  <- parseVersion attrs "3"
   (ps, ws) <- extractPdus children parsePublishQ parseWithdrawQ
   return $ Message version $ ps ++ ws
 
@@ -122,7 +122,7 @@ extractCommonAttrs :: [(T.Text, T.Text)] -> Either ParseError (SessionId, Versio
 extractCommonAttrs attrs = do
   sessionId <- U.maybeToEither NoSessionId $ getAttr attrs "session_id"
   sSerial   <- U.maybeToEither NoSerial $ getAttr attrs "serial"
-  version   <- parseVersion attrs
+  version   <- parseVersion attrs "1"
   serial    <- U.maybeToEither (BadSerial sSerial) (TR.readMaybe $ T.unpack sSerial)
   return (SessionId sessionId, version, Serial serial)
 
@@ -136,8 +136,8 @@ mkElem :: U.BString s => String -> [(String, s)] -> [Elem s] -> Elem s
 mkElem name attrs children = XT.Element name attrs children
 
 publishElem :: URI -> Base64 -> Maybe Hash -> Elem BS.ByteString
-publishElem uri (Base64 b64 _) Nothing            = mkElem "publish" [("uri", U.pack $ show uri)] [XT.Text $ U.strict b64]
-publishElem uri (Base64 b64 _) (Just (Hash hash)) = mkElem "publish" [("uri", U.pack $ show uri), ("hash", U.strict hash)] [XT.Text $ U.strict b64]
+publishElem uri base64 Nothing            = mkElem "publish" [("uri", U.pack $ show uri)] [XT.Text $ U.base64bs base64]
+publishElem uri base64 (Just (Hash hash)) = mkElem "publish" [("uri", U.pack $ show uri), ("hash", U.strict hash)] [XT.Text $ U.base64bs base64]
 
 withdrawElem :: URI -> Hash -> Elem BS.ByteString
 withdrawElem uri (Hash hash) = mkElem "withdraw" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
