@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE FlexibleContexts #-}
-module RRDP.XMLStream where
+module RRDP.XML where
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.ByteString.Char8 as BS
@@ -54,7 +54,7 @@ parseVersion :: [(T.Text, T.Text)] -> T.Text -> Either ParseError Version
 parseVersion attrs correctVersion = do
   sVersion  <- U.maybeToEither NoVersion $ getAttr attrs "version"
   vsVersion <- U.verify (sVersion == correctVersion) (BadVersion sVersion) sVersion
-  version   <- U.maybeToEither (BadVersion sVersion) (TR.readMaybe $ T.unpack sVersion)
+  version   <- U.maybeToEither (BadVersion sVersion) (TR.readMaybe $ T.unpack vsVersion)
   return $ Version version
 
 

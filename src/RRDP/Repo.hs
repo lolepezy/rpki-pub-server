@@ -19,7 +19,7 @@ import System.IO.Error
 
 import Types
 import qualified Util as U
-import qualified RRDP.XMLStream as XS
+import qualified RRDP.XML as XS
 
 type RRDPValue r = Either RRDPError r
 
