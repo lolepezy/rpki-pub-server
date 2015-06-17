@@ -107,16 +107,10 @@ processMessage repository serializedRepo appState = do
     where
       respond :: RqBody -> ServerPart L.ByteString
       respond rqbody = do
-        liftIO $ print "processing message 1"
         -- apply changes to in-memory repo first
         _result <- liftIO $ applyChange $ unBody rqbody
-
-        liftIO $ print "processing message 2"
-
         mapRrdp _result $ \(reply, repo) -> do
-          liftIO $ print "synching to FS 1"
           syncResult <- liftIO $ syncToFS repo $ repoPath appState
-          liftIO $ print "synching to FS 2"
           mapRrdp syncResult $ \_ -> ok reply
 
       mapRrdp (Left e)  _ = respondRRDP $ Left e
