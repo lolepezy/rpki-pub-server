@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE FlexibleContexts #-}
 module RRDP.XML where
 
@@ -62,7 +61,7 @@ parsePublishWithHash :: (URI -> Base64 -> Maybe Hash -> p) -> [(T.Text, T.Text)]
 parsePublishWithHash pubC attrs b64 = do
   uri    <- parseUri attrs
   base64 <- U.mkBase64 $ U.text2Lbs b64
-  let hash  = fmap (Hash . U.text2Lbs) $ getAttr attrs "hash"
+  let hash  = Hash . U.text2Lbs <$> getAttr attrs "hash"
   return $ pubC uri base64 hash
 
 parsePublish :: [(T.Text, T.Text)] -> T.Text -> Either ParseError Publish
@@ -127,13 +126,14 @@ extractCommonAttrs attrs = do
   return (SessionId sessionId, version, Serial serial)
 
 
+verifyXmlNs :: T.Text -> Either ParseError ()
 verifyXmlNs xmlNs = U.verify ("HTTP://www.ripe.net/rpki/rrdp" == xmlNs) (BadXmlNs xmlNs) ()
 
 
 type Elem s = XT.Node String s
 
 mkElem :: U.BString s => String -> [(String, s)] -> [Elem s] -> Elem s
-mkElem name attrs children = XT.Element name attrs children
+mkElem = XT.Element
 
 publishElem :: URI -> Base64 -> Maybe Hash -> Elem BS.ByteString
 publishElem uri base64 Nothing            = mkElem "publish" [("uri", U.pack $ show uri)] [XT.Text $ U.base64bs base64]

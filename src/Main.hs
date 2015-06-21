@@ -18,6 +18,7 @@ import           Options
 
 import           Types
 import           Util
+import           Store
 import           RRDP.Repo
 
 die :: String -> IO a

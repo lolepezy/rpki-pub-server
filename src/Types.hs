@@ -1,16 +1,27 @@
+{-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
 module Types where
 
+import Data.Data (Data, Typeable)
+import Data.SafeCopy (base, deriveSafeCopy)
 import Network.URI
 import qualified Data.ByteString.Lazy.Char8  as L
 import qualified Data.Text as T
 
 newtype Serial = Serial Int deriving (Show, Eq, Ord)
 newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord)
-newtype Hash = Hash L.ByteString deriving (Show, Eq)
 newtype Version = Version Int deriving (Show, Eq)
 
+newtype Hash = Hash L.ByteString deriving (Show, Eq, Ord, Typeable, Data)
+$(deriveSafeCopy 0 'base ''Hash)
+
 data Base64 = Base64 !L.ByteString Hash
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord, Typeable, Data)
+
+$(deriveSafeCopy 0 'base ''Base64)
+
+-- some other derivations 
+$(deriveSafeCopy 0 'base ''URI)
+$(deriveSafeCopy 0 'base ''URIAuth)
 
 data SnapshotDef = SnapshotDef !Version !SessionId !Serial
   deriving (Show, Eq)

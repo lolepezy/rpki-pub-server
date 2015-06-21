@@ -3,6 +3,7 @@
 
 module RRDP.Repo where
 
+import Control.Applicative
 import Data.Maybe
 import Data.Either
 import Data.Map as M
@@ -129,7 +130,7 @@ updateRepo repo@(Repository
       let
         withHashCheck uri queryHash storedHash f
             | queryHash == storedHash = f
-            | otherwise = Wrong $ BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+            | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
         in
       case p of
         PublishQ uri base64 Nothing ->
@@ -149,12 +150,12 @@ updateRepo repo@(Repository
       | p <- pdus ]
 
 
-    deltaP = [ c | Just c <- [
+    deltaP = catMaybes [
         case c of
           Add (uri, base64)          -> Just $ Publish uri base64 Nothing
           Update (uri, base64, hash) -> Just $ Publish uri base64 (Just hash)
           _                          -> Nothing
-        | c <- changes ]]
+        | c <- changes ]
 
     deltaW = [ Withdraw uri hash | Delete (uri, hash) <- changes ]
 
@@ -209,7 +210,7 @@ readRepoFromFS (AppOptions {
     readRepo :: AnchoredDirTree L.ByteString -> IO (Either RepoError AppState)
     readRepo (_ :/ Dir { contents = repoDirContent } ) = do
       -- read sessions and separate successfull ones from broken ones.
-      let potentialRepositories = [ U.leftmap (sId,) $ fmap (sId,) $ readSession sId dir
+      let potentialRepositories = [ U.leftmap (sId,) $ (sId,) <$> readSession sId dir
                                   | dir@Dir { name = sessionId } <- repoDirContent, let sId = SessionId $ T.pack sessionId ]
 
       {- we don't enforce a restriction for all sessions to be valid,
@@ -306,7 +307,7 @@ syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial))
 
     -- TODO: Think about getting rid of Maybe here and how to always
     -- have a delta
-    deltaBytes  = fmap serializeDelta $ M.lookup serial _deltas
+    deltaBytes  = serializeDelta <$> M.lookup serial _deltas
 
 
 applyToRepo :: Repository -> L.ByteString -> Either RRDPError (Repository, L.ByteString)
