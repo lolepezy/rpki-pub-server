@@ -45,14 +45,18 @@ data Repo = Repo (IxSet RepoObject)
 
 $(deriveSafeCopy 0 'base ''Repo)
 
-list :: String -> Query Repo [RepoObject]
-list clientId = do
-  Repo objs <- ask
-  return $ toList $ objs @= clientId
-
 add :: RepoObject -> Update Repo ()
 add obj = do
   Repo r <- get
   put $ Repo $ IX.updateIx (uri obj) obj r
 
-   
+getByClientId :: ClientId -> Query Repo [RepoObject]
+getByClientId = getByA
+
+getByURI :: URI -> Query Repo [RepoObject]
+getByURI = getByA
+
+getByA :: Typeable a => a -> Query Repo [RepoObject]
+getByA f = do
+  Repo objs <- ask
+  return $ toList $ objs @= f
