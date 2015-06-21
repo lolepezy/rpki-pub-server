@@ -1,11 +1,12 @@
-{-# LANGUAGE DeriveDataTypeable, TemplateHaskell #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TemplateHaskell    #-}
 module Types where
 
-import Data.Data (Data, Typeable)
-import Data.SafeCopy (base, deriveSafeCopy)
-import Network.URI
-import qualified Data.ByteString.Lazy.Char8  as L
-import qualified Data.Text as T
+import qualified Data.ByteString.Lazy.Char8 as L
+import           Data.Data                  (Data, Typeable)
+import           Data.SafeCopy              (base, deriveSafeCopy)
+import qualified Data.Text                  as T
+import           Network.URI
 
 newtype Serial = Serial Int deriving (Show, Eq, Ord)
 newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord)
@@ -19,7 +20,7 @@ data Base64 = Base64 !L.ByteString Hash
 
 $(deriveSafeCopy 0 'base ''Base64)
 
--- some other derivations 
+-- some other derivations
 $(deriveSafeCopy 0 'base ''URI)
 $(deriveSafeCopy 0 'base ''URIAuth)
 
@@ -102,7 +103,7 @@ data RepoError = CannotFindSnapshot SessionId
   deriving (Eq, Show)
 
 data AppOptions = AppOptions {
-  repositoryPathOpt :: String,
+  repositoryPathOpt    :: String,
   repositoryBaseUrlOpt :: String,
-  currentSessionOpt :: String
+  currentSessionOpt    :: String
 }

@@ -1,26 +1,26 @@
-{-# LANGUAGE TupleSections  #-}
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections     #-}
 
 module RRDP.Repo where
 
-import Control.Applicative
-import Data.Maybe
-import Data.Either
-import Data.Map as M
-import Data.Set as S
-import Network.URI
+import           Control.Applicative
+import           Data.Either
+import           Data.Map                   as M
+import           Data.Maybe
+import           Data.Set                   as S
+import           Network.URI
 
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Text as T
+import qualified Data.Text                  as T
 
-import System.Directory
-import System.Directory.Tree
-import System.FilePath
-import System.IO.Error
+import           System.Directory
+import           System.Directory.Tree
+import           System.FilePath
+import           System.IO.Error
 
-import Types
-import qualified Util as U
-import qualified RRDP.XML as XS
+import qualified RRDP.XML                   as XS
+import           Types
+import qualified Util                       as U
 
 type RRDPValue r = Either RRDPError r
 
@@ -30,21 +30,21 @@ type DeltaMap = M.Map Int Delta
 
 data Repository = Repository {
   snapshost :: Snapshot,
-  deltas :: DeltaMap
+  deltas    :: DeltaMap
 } deriving (Show)
 
 -- Serialized representation of the repository
 data SerializedRepo = SerializedRepo {
-  snapshotS :: L.ByteString,
-  deltaS :: M.Map Int L.ByteString,
+  snapshotS     :: L.ByteString,
+  deltaS        :: M.Map Int L.ByteString,
   notificationS :: L.ByteString
 } deriving (Show)
 
 data AppState = AppState {
-  sessions :: Map SessionId Repository,
-  currentSession :: Repository,
-  repoPath :: String,
-  repoUrlBase :: String,
+  sessions              :: Map SessionId Repository,
+  currentSession        :: Repository,
+  repoPath              :: String,
+  repoUrlBase           :: String,
   serializedCurrentRepo :: SerializedRepo
 } deriving (Show)
 
