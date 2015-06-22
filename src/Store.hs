@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TemplateHaskell    #-}
+{-# LANGUAGE TypeFamilies       #-}
 
 module Store
     (
@@ -60,3 +61,5 @@ getByA :: Typeable a => a -> Query Repo [RepoObject]
 getByA f = do
   Repo objs <- ask
   return $ toList $ objs @= f
+
+$(makeAcidic ''Repo [ 'add ])

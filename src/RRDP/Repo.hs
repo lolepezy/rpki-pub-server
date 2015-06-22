@@ -318,3 +318,75 @@ applyToRepo repo queryXml = do
   where
     mapParseError (Left e)  = Left $ BadMessage e
     mapParseError (Right r) = Right r
+
+
+
+  {- Update repository based on incoming message -}
+updateRepoPersistent :: Repository -> QMessage -> (Repository, RMessage)
+updateRepoPersistent repo@(Repository
+                    (Snapshot (SnapshotDef version sessionId (Serial serial)) existingPublishes)
+                    existingDeltas) (Message (Version mVersion) pdus) =
+
+    case reportErrors of
+      [] -> (newRepo, reply)
+      _  -> (repo, reply)
+
+    where
+      newSerial = serial + 1
+
+      {- TODO That could be quite slow, think on making the map "persistent"
+         in the current repository -}
+      existingObjects  = M.fromList [ (uri, hash) | Publish uri (Base64 _ hash) _ <- existingPublishes ]
+      existingHash uri = M.lookup uri existingObjects
+
+      changes = [
+        let
+          withHashCheck uri queryHash storedHash f
+              | queryHash == storedHash = f
+              | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+          in
+        case p of
+          PublishQ uri base64 Nothing ->
+            case existingHash uri of
+              Nothing -> Add (uri, base64)
+              Just _  -> Wrong $ CannotInsertExistingObject uri
+
+          PublishQ uri base64 (Just hash) ->
+            case existingHash uri of
+              Nothing -> Wrong $ ObjectNotFound uri
+              Just h  -> withHashCheck uri hash h $ Update (uri, base64, hash)
+          WithdrawQ uri hash ->
+            case existingHash uri of
+              Nothing -> Wrong $ ObjectNotFound uri
+              Just h  -> withHashCheck uri hash h $ Delete (uri, hash)
+
+        | p <- pdus ]
+
+
+      deltaP = catMaybes [
+          case c of
+            Add (uri, base64)          -> Just $ Publish uri base64 Nothing
+            Update (uri, base64, hash) -> Just $ Publish uri base64 (Just hash)
+            _                          -> Nothing
+          | c <- changes ]
+
+      deltaW = [ Withdraw uri hash | Delete (uri, hash) <- changes ]
+
+      newUrls  = S.fromList $
+                   [ uri | Publish uri _ _ <- deltaP ] ++
+                   [ uri | Withdraw uri _  <- deltaW ]
+      onlyOldObjects = Prelude.filter oldObject existingPublishes
+        where oldObject (Publish uri _ _) = not $ uri `S.member` newUrls
+
+      newSnapshotP = onlyOldObjects ++ deltaP
+
+      newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
+      newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
+      newDeltas    = M.insert newSerial newDelta existingDeltas
+      newRepo      = Repository newSnapshot newDeltas
+
+       -- generate reply
+      reply        = Message (Version mVersion) (publishR ++ withdrawR ++ reportErrors) :: Message ReplyPdu
+      publishR     = [ PublishR    uri  | Publish uri _ _ <- deltaP  ]
+      withdrawR    = [ WithdrawR   uri  | Withdraw uri _  <- deltaW  ]
+      reportErrors = [ ReportError err_ | Wrong err_      <- changes ]
