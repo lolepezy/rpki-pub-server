@@ -13,6 +13,10 @@ import           Network.URI
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Text                  as T
 
+import           Data.Acid
+import Data.Acid.Advanced   (update', query')
+
+
 import           System.Directory
 import           System.Directory.Tree
 import           System.FilePath
@@ -21,6 +25,8 @@ import           System.IO.Error
 import qualified RRDP.XML                   as XS
 import           Types
 import qualified Util                       as U
+import qualified Store                      as ST
+
 
 type RRDPValue r = Either RRDPError r
 
@@ -320,73 +326,63 @@ applyToRepo repo queryXml = do
     mapParseError (Right r) = Right r
 
 
+actionSeq :: ClientId -> [QueryPdu] -> Map URI ST.RepoObject -> [ObjOperation (URI, Base64) (URI, Base64) URI RepoError]
+actionSeq clientId pdus uriMap = [
+  let
+    withClientIdCheck objUri sClientId f
+        | sClientId == clientId = f
+        | otherwise = Wrong CannotChangeOtherClientObject { oUri = objUri, storedClientId = sClientId, queryClientId = clientId }
 
-  {- Update repository based on incoming message -}
-updateRepoPersistent :: Repository -> QMessage -> (Repository, RMessage)
-updateRepoPersistent repo@(Repository
-                    (Snapshot (SnapshotDef version sessionId (Serial serial)) existingPublishes)
-                    existingDeltas) (Message (Version mVersion) pdus) =
+    withHashCheck uri queryHash storedHash f
+        | queryHash == storedHash = f
+        | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+    in
+    case p of
+      PublishQ uri base64 Nothing ->
+        case M.lookup uri uriMap of
+          Nothing -> Update (uri, base64)
+          Just _  -> Wrong $ CannotInsertExistingObject uri
 
-    case reportErrors of
-      [] -> (newRepo, reply)
-      _  -> (repo, reply)
+      PublishQ uri base64 (Just hash) ->
+        case M.lookup uri uriMap of
+          Nothing -> Wrong $ ObjectNotFound uri
+          Just (ST.RepoObject { ST.base64 = Base64 _ h, ST.clientId = cId }) ->
+            withClientIdCheck uri cId $ withHashCheck uri hash h $ Update (uri, base64)
 
+      WithdrawQ uri hash ->
+        case M.lookup uri uriMap of
+          Nothing -> Wrong $ ObjectNotFound uri
+          Just (ST.RepoObject { ST.base64 = Base64 _ h, ST.clientId = cId }) ->
+            withClientIdCheck uri cId $ withHashCheck uri hash h $ Delete uri
+
+  | p <- pdus ]
+
+actions :: AcidState ST.Repo -> [QueryPdu] -> ClientId -> IO [ObjOperation (URI, Base64) (URI, Base64) URI RepoError]
+actions repo pdus clientId = do
+    ros <- query' repo (ST.GetByURIs uris)
+    let uriMap = M.fromList [ (u, ro) | ro @ ST.RepoObject { ST.uri = u } <- ros ]
+    return $ actionSeq clientId pdus uriMap
+  where
+    uris = [ case p of
+              PublishQ uri _ _ -> uri
+              WithdrawQ uri _  -> uri
+            | p <- pdus ]
+
+
+updateRepo1 :: AcidState (EventState ST.GetByURI) -> [QueryPdu] -> ClientId -> IO [EventResult ST.Add]
+updateRepo1 repo pdus clientId = do
+  as <- actions repo pdus clientId
+  sequence [ case action of
+        Update (uri, base64) -> update' repo (ST.Add ST.RepoObject { ST.clientId = clientId, ST.uri = uri, ST.base64 = base64 })
+        Delete uri           -> update' repo (ST.Delete uri)
+     | action <- as ]
+
+
+processMessage2 :: AcidState ST.Repo -> AppState -> L.ByteString -> ClientId -> Either RRDPError (AcidState ST.Repo)
+processMessage2 repo appState queryXml clientId = do
+    Message version pdus <- mapParseError $ XS.parseMessage queryXml
+    let z = updateRepo1 repo pdus clientId
+    Right repo
     where
-      newSerial = serial + 1
-
-      {- TODO That could be quite slow, think on making the map "persistent"
-         in the current repository -}
-      existingObjects  = M.fromList [ (uri, hash) | Publish uri (Base64 _ hash) _ <- existingPublishes ]
-      existingHash uri = M.lookup uri existingObjects
-
-      changes = [
-        let
-          withHashCheck uri queryHash storedHash f
-              | queryHash == storedHash = f
-              | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
-          in
-        case p of
-          PublishQ uri base64 Nothing ->
-            case existingHash uri of
-              Nothing -> Add (uri, base64)
-              Just _  -> Wrong $ CannotInsertExistingObject uri
-
-          PublishQ uri base64 (Just hash) ->
-            case existingHash uri of
-              Nothing -> Wrong $ ObjectNotFound uri
-              Just h  -> withHashCheck uri hash h $ Update (uri, base64, hash)
-          WithdrawQ uri hash ->
-            case existingHash uri of
-              Nothing -> Wrong $ ObjectNotFound uri
-              Just h  -> withHashCheck uri hash h $ Delete (uri, hash)
-
-        | p <- pdus ]
-
-
-      deltaP = catMaybes [
-          case c of
-            Add (uri, base64)          -> Just $ Publish uri base64 Nothing
-            Update (uri, base64, hash) -> Just $ Publish uri base64 (Just hash)
-            _                          -> Nothing
-          | c <- changes ]
-
-      deltaW = [ Withdraw uri hash | Delete (uri, hash) <- changes ]
-
-      newUrls  = S.fromList $
-                   [ uri | Publish uri _ _ <- deltaP ] ++
-                   [ uri | Withdraw uri _  <- deltaW ]
-      onlyOldObjects = Prelude.filter oldObject existingPublishes
-        where oldObject (Publish uri _ _) = not $ uri `S.member` newUrls
-
-      newSnapshotP = onlyOldObjects ++ deltaP
-
-      newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
-      newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
-      newDeltas    = M.insert newSerial newDelta existingDeltas
-      newRepo      = Repository newSnapshot newDeltas
-
-       -- generate reply
-      reply        = Message (Version mVersion) (publishR ++ withdrawR ++ reportErrors) :: Message ReplyPdu
-      publishR     = [ PublishR    uri  | Publish uri _ _ <- deltaP  ]
-      withdrawR    = [ WithdrawR   uri  | Withdraw uri _  <- deltaW  ]
-      reportErrors = [ ReportError err_ | Wrong err_      <- changes ]
+      mapParseError (Left e)  = Left $ BadMessage e
+      mapParseError (Right r) = Right r

@@ -13,16 +13,15 @@ newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord)
 newtype Version = Version Int deriving (Show, Eq)
 
 newtype Hash = Hash L.ByteString deriving (Show, Eq, Ord, Typeable, Data)
+newtype ClientId = ClientId String deriving (Show, Eq, Ord, Typeable, Data)
+
+data Base64 = Base64 !L.ByteString Hash deriving (Show, Eq, Ord, Typeable, Data)
+
 $(deriveSafeCopy 0 'base ''Hash)
-
-data Base64 = Base64 !L.ByteString Hash
-  deriving (Show, Eq, Ord, Typeable, Data)
-
 $(deriveSafeCopy 0 'base ''Base64)
-
--- some other derivations
 $(deriveSafeCopy 0 'base ''URI)
 $(deriveSafeCopy 0 'base ''URIAuth)
+$(deriveSafeCopy 0 'base ''ClientId)
 
 data SnapshotDef = SnapshotDef !Version !SessionId !Serial
   deriving (Show, Eq)
@@ -98,6 +97,7 @@ data RepoError = CannotFindSnapshot SessionId
               | BadDelta SessionId Int ParseError
               | ObjectNotFound URI
               | CannotInsertExistingObject URI
+              | CannotChangeOtherClientObject { oUri :: URI, storedClientId :: ClientId, queryClientId :: ClientId }
               | BadHash { passed :: Hash, stored ::Hash, uriW :: URI }
               | RepoESeq [RepoError]
   deriving (Eq, Show)

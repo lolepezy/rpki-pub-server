@@ -1,25 +1,34 @@
-{-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE OverloadedStrings #-}
 
-import System.Exit
+import           System.Exit
 
-import           Control.Concurrent.STM
 import           Control.Applicative
-import           Control.Monad               (msum)
-import           Control.Monad.IO.Class      (liftIO)
-import           Control.Monad.Trans.Class   (lift)
-import qualified Data.ByteString.Lazy.Char8  as L
-import           Happstack.Server            (ServerPart, simpleHTTP, askRq, setHeaderM,
-                                              badRequest, notFound, dir, method, ok, path)
+import           Control.Concurrent.STM
+import           Control.Exception          (bracket)
+import           Control.Monad              (msum)
+import           Control.Monad.IO.Class     (liftIO)
+import           Control.Monad.Trans.Class  (lift)
+import qualified Data.ByteString.Lazy.Char8 as L
+import           Happstack.Server           (ServerPart, askRq, badRequest, dir,
+                                             method, notFound, ok, path,
+                                             setHeaderM, simpleHTTP)
 --import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
-import qualified Data.Text as T
+import           Data.Acid                  (openLocalState, AcidState)
+import Data.Acid.Advanced   (update', query')
+
+import           Data.Acid.Local            (createCheckpointAndClose)
+
+
+import qualified Data.Text                  as T
 import           Options
 
+import           RRDP.Repo
+import qualified RRDP.XML                   as XS
+import qualified Store                      as ST
 import           Types
 import           Util
-import           Store
-import           RRDP.Repo
 
 die :: String -> IO a
 die err = do putStrLn err
@@ -49,27 +58,29 @@ main = runCommand $ \opts _ -> do
 
 
 setupWebApp :: AppState -> IO ()
-setupWebApp appState = do
-  let repository           = currentSession appState
-  let serializedRepository = serializedCurrentRepo appState
-  (repositoryState, serializedRepoState) <- atomically $ do
-     rep    <- newTVar repository
-     serRep <- newTVar serializedRepository
-     return (rep, serRep)
+setupWebApp appState = bracket (openLocalState ST.initialStore) createCheckpointAndClose
+  (\acid -> do
+    let repository           = currentSession appState
+    let serializedRepository = serializedCurrentRepo appState
+    (repositoryState, serializedRepoState) <- atomically $ do
+       rep    <- newTVar repository
+       serRep <- newTVar serializedRepository
+       return (rep, serRep)
 
-  simpleHTTP nullConf { port = defaultPort } $ msum
-    [ dir "message" $ method POST >>
-        (rpkiContentType $ processMessage repositoryState serializedRepoState appState),
+    simpleHTTP nullConf { port = defaultPort } $ msum
+      [ dir "message" $ method POST >>
+          (rpkiContentType $ processMessage repositoryState serializedRepoState appState),
 
-      dir "notification.xml" $ method GET >>
-        (rrdpContentType $ notificationXml serializedRepoState >>= respondRRDP),
+        dir "notification.xml" $ method GET >>
+          (rrdpContentType $ notificationXml serializedRepoState >>= respondRRDP),
 
-      path $ \sessionId -> dir "snapshot.xml" $ method GET >>
-        (rrdpContentType $ snapshotXmlFile serializedRepoState sessionId >>= respondRRDP),
+        path $ \sessionId -> dir "snapshot.xml" $ method GET >>
+          (rrdpContentType $ snapshotXmlFile serializedRepoState sessionId >>= respondRRDP),
 
-      path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
-        (rrdpContentType $ deltaXmlFile serializedRepoState sessionId deltaNumber >>= respondRRDP)
-    ]
+        path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
+          (rrdpContentType $ deltaXmlFile serializedRepoState sessionId deltaNumber >>= respondRRDP)
+      ]
+  )
 
 
 rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
@@ -126,6 +137,48 @@ processMessage repository serializedRepo appState = do
             writeTVar serializedRepo $ serializeRepo newRepo $ repoUrlBase appState
             return $ Right (reply, newRepo)
           Left  e -> return $ Left e
+
+
+
+processMessage2 :: AcidState ST.Repo -> AppState -> ST.ClientId -> ServerPart L.ByteString
+processMessage2 repo appState clientId = do
+    req  <- askRq
+    body <- liftIO $ takeRequestBody req
+    case body of
+      Just rqbody -> respond rqbody
+      Nothing     -> badRequest "Request has no body"
+    where
+      respond :: RqBody -> ServerPart L.ByteString
+      respond rqbody = do
+        (reply, repo) <- liftIO $ applyMsg repo $ unBody rqbody
+
+
+
+      -- apply changes to ACID state
+      applyMsg repo queryXml = do
+        Message Version pdus <- mapParseError $ XS.parseMessage queryXml
+        map (\pdu ->
+              case pdu of
+                PublishQ uri base64 mHash -> do
+                   obj <- query' repo (ST.GetByURI uri)
+                   update' repo (Add ST.RepoObject { ST.clientId = clientId, ST.uri = uri, ST.base64 = base64 })
+
+
+                WithdrawQ uri mHash       -> ST.getByURI uri
+              ) pdus
+        let (newRepo, replyMessage) = updateRepo repo (Message Version pdus)
+        return (newRepo, XS.createReply replyMessage)
+        where
+          getObj uri = query' repo (ST.GetByURI uri)
+
+
+
+
+          mapParseError (Left e)  = Left $ BadMessage e
+          mapParseError (Right r) = Right r
+
+
+
 
 notificationXml :: TVar SerializedRepo -> ServerPart RRDPResponse
 notificationXml serializedRepo = lift $ atomically $ do
