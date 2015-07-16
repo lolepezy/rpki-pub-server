@@ -12,7 +12,6 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import           Happstack.Server           (ServerPart, askRq, badRequest, dir,
                                              method, notFound, ok, path,
                                              setHeaderM, simpleHTTP)
---import           Happstack.Server.Env        (simpleHTTP)
 import           Happstack.Server.Types
 
 import           Data.Acid                  (openLocalState, AcidState)
@@ -137,47 +136,6 @@ processMessage repository serializedRepo appState = do
             writeTVar serializedRepo $ serializeRepo newRepo $ repoUrlBase appState
             return $ Right (reply, newRepo)
           Left  e -> return $ Left e
-
-
-
-processMessage2 :: AcidState ST.Repo -> AppState -> ST.ClientId -> ServerPart L.ByteString
-processMessage2 repo appState clientId = do
-    req  <- askRq
-    body <- liftIO $ takeRequestBody req
-    case body of
-      Just rqbody -> respond rqbody
-      Nothing     -> badRequest "Request has no body"
-    where
-      respond :: RqBody -> ServerPart L.ByteString
-      respond rqbody = do
-        (reply, repo) <- liftIO $ applyMsg repo $ unBody rqbody
-
-
-
-      -- apply changes to ACID state
-      applyMsg repo queryXml = do
-        Message Version pdus <- mapParseError $ XS.parseMessage queryXml
-        map (\pdu ->
-              case pdu of
-                PublishQ uri base64 mHash -> do
-                   obj <- query' repo (ST.GetByURI uri)
-                   update' repo (Add ST.RepoObject { ST.clientId = clientId, ST.uri = uri, ST.base64 = base64 })
-
-
-                WithdrawQ uri mHash       -> ST.getByURI uri
-              ) pdus
-        let (newRepo, replyMessage) = updateRepo repo (Message Version pdus)
-        return (newRepo, XS.createReply replyMessage)
-        where
-          getObj uri = query' repo (ST.GetByURI uri)
-
-
-
-
-          mapParseError (Left e)  = Left $ BadMessage e
-          mapParseError (Right r) = Right r
-
-
 
 
 notificationXml :: TVar SerializedRepo -> ServerPart RRDPResponse
