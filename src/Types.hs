@@ -8,20 +8,14 @@ import           Data.SafeCopy              (base, deriveSafeCopy)
 import qualified Data.Text                  as T
 import           Network.URI
 
-newtype Serial = Serial Int deriving (Show, Eq, Ord)
-newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord)
+newtype Serial = Serial Int deriving (Show, Eq, Ord, Typeable, Data)
+newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord, Typeable, Data)
 newtype Version = Version Int deriving (Show, Eq)
 
 newtype Hash = Hash L.ByteString deriving (Show, Eq, Ord, Typeable, Data)
 newtype ClientId = ClientId String deriving (Show, Eq, Ord, Typeable, Data)
 
 data Base64 = Base64 !L.ByteString Hash deriving (Show, Eq, Ord, Typeable, Data)
-
-$(deriveSafeCopy 0 'base ''Hash)
-$(deriveSafeCopy 0 'base ''Base64)
-$(deriveSafeCopy 0 'base ''URI)
-$(deriveSafeCopy 0 'base ''URIAuth)
-$(deriveSafeCopy 0 'base ''ClientId)
 
 data SnapshotDef = SnapshotDef !Version !SessionId !Serial
   deriving (Show, Eq)
@@ -53,7 +47,7 @@ type RMessage = Message ReplyPdu
 
 data QueryPdu = PublishQ !URI !Base64 !(Maybe Hash)
   | WithdrawQ !URI !Hash
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord, Typeable, Data)
 
 data ReplyPdu = PublishR !URI
   | WithdrawR !URI
@@ -107,3 +101,11 @@ data AppOptions = AppOptions {
   repositoryBaseUrlOpt :: String,
   currentSessionOpt    :: String
 }
+
+$(deriveSafeCopy 0 'base ''Hash)
+$(deriveSafeCopy 0 'base ''Serial)
+$(deriveSafeCopy 0 'base ''Base64)
+$(deriveSafeCopy 0 'base ''URI)
+$(deriveSafeCopy 0 'base ''URIAuth)
+$(deriveSafeCopy 0 'base ''ClientId)
+$(deriveSafeCopy 0 'base ''QueryPdu)

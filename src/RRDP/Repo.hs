@@ -369,6 +369,13 @@ actions repo pdus clientId = do
             | p <- pdus ]
 
 
+{-
+add :: RepoObject -> Update Repo ()
+add obj = do
+  Repo r <- get
+  put $ Repo $ IX.updateIx (uri obj) obj r
+-}
+
 updateRepo1 :: AcidState (EventState ST.GetByURI) -> [QueryPdu] -> ClientId -> IO [EventResult ST.Add]
 updateRepo1 repo pdus clientId = do
   as <- actions repo pdus clientId
@@ -386,3 +393,28 @@ processMessage2 repo appState queryXml clientId = do
     where
       mapParseError (Left e)  = Left $ BadMessage e
       mapParseError (Right r) = Right r
+
+
+---------
+createNotification :: Repository -> String -> L.ByteString -> Map Int L.ByteString -> L.ByteString
+createNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _) _) _deltas) _repoUrlBase sSnapshot sDeltas =
+  U.lazy $ XS.format $ XS.notificationElem sd elements
+  where
+    elements = [ snapshotDefElem sUri (U.getHash $ U.lazy sSnapshot)
+               | sUri <- maybeToList snapshotUri ] ++
+               [ deltaDefElem   dUri (U.getHash $ U.lazy sDelta) serial
+               | (serial, _) <- M.toList _deltas,
+                  sDelta     <- maybeToList $ M.lookup serial sDeltas,
+                  dUri       <- maybeToList $ deltaUri serial ]
+
+    snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/snapshot.xml"
+    deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
+
+    snapshotDefElem uri (Hash hash)     = XS.mkElem "snapshot" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
+    deltaDefElem uri (Hash hash) serial = XS.mkElem "delta" [("uri", U.pack $ show uri), ("hash", U.strict hash), ("serial", U.pack $ show serial)] []
+
+
+createSnapshot :: [ST.RepoObject] -> SnapshotDef -> L.ByteString
+createSnapshot ros snapshotDef = U.lazy $ XS.format $ XS.snapshotElem snapshotDef publishElements
+  where
+    publishElements = [XS.publishElem u b64 Nothing | ST.RepoObject { ST.uri = u, ST.base64 = b64 } <- ros]
