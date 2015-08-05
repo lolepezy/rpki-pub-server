@@ -107,6 +107,20 @@ respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ "Message pars
 respondRRDP (Left e) = badRequest $ L.pack $ "Error: " ++ show e
 
 
+processMessageAcid :: AcidState ST.Repo -> AppState -> ServerPart L.ByteString
+processMessageAcid acid appState = do
+    req  <- askRq
+    body <- liftIO $ takeRequestBody req
+    case body of
+      Just rqbody -> respond rqbody
+      Nothing     -> badRequest "Request has no body"
+    where
+      -- TODO Read in from the request as well
+      clientId = ClientId "defaultClientId"
+
+      respond :: RqBody -> ServerPart L.ByteString
+      respond rqbody = respondRRDP $ snd <$> processMessage2 acid appState (unBody rqbody) clientId
+
 
 processMessage :: TVar Repository -> TVar SerializedRepo -> AppState -> ServerPart L.ByteString
 processMessage repository serializedRepo appState = do
@@ -144,6 +158,7 @@ notificationXml serializedRepo = lift $ atomically $ do
     return $ Right $ notificationS repo
 
 -- TODO Handle requests for non-current sessions as well
+-- TODO Simply read the files from FS and stream them to the client (happstack??)
 snapshotXmlFile :: TVar SerializedRepo -> String -> ServerPart RRDPResponse
 snapshotXmlFile serializedRepo sessionId = lift $ atomically $ do
     repo <- readTVar serializedRepo

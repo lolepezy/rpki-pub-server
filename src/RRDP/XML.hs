@@ -104,11 +104,6 @@ parseMessage xml = parseGeneric xml $ \attrs children -> do
   (ps, ws) <- extractPdus children parsePublishQ parseWithdrawQ
   return $ Message version $ ps ++ ws
 
-parseDelta :: LBS.ByteString -> Either ParseError Delta
-parseDelta xml = parseGeneric xml $ \attrs children -> do
-  (sessionId, version, serial) <- extractCommonAttrs attrs
-  (ps, ws)                     <- extractPdus children parsePublish parseWithdraw
-  return $ Delta (DeltaDef version sessionId serial) ps ws
 
 parseSnapshot :: LBS.ByteString -> Either ParseError Snapshot
 parseSnapshot xml = parseGeneric xml $ \attrs children -> do
@@ -146,7 +141,7 @@ snapshotElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s
 snapshotElem (SnapshotDef version sId serial) = commonElem version sId serial "snapshot"
 
 deltaElem :: U.BString s => DeltaDef -> [Elem s] -> [Elem s] -> Elem s
-deltaElem (DeltaDef version sId serial) publishElements withdrawElements =
+deltaElem (DeltaDef version sId serial _) publishElements withdrawElements =
   commonElem version sId serial "delta" (publishElements ++ withdrawElements)
 
 notificationElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s

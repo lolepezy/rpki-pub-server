@@ -4,6 +4,7 @@
 module RRDP.Repo where
 
 import           Control.Applicative
+import           Control.Monad.IO.Class
 import           Data.Either
 import           Data.Map                   as M
 import           Data.Maybe
@@ -111,9 +112,6 @@ serializeDelta (Delta deltaDef ps ws) = U.lazy $ XS.format $ XS.deltaElem deltaD
     wElems = [XS.withdrawElem uri hash       | Withdraw uri hash <- ws]
 
 
--- private utility type to make logic easier to understand
-data ObjOperation a u d w = Add a | Update u | Delete d | Wrong w
-
 {- Update repository based on incoming message -}
 updateRepo :: Repository -> QMessage -> (Repository, RMessage)
 updateRepo repo@(Repository
@@ -136,34 +134,35 @@ updateRepo repo@(Repository
       let
         withHashCheck uri queryHash storedHash f
             | queryHash == storedHash = f
-            | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+            | otherwise = Wrong_ BadHash { passed = queryHash, stored = storedHash, uriW = uri }
         in
       case p of
         PublishQ uri base64 Nothing ->
           case existingHash uri of
-            Nothing -> Add (uri, base64)
-            Just _  -> Wrong $ CannotInsertExistingObject uri
+            Nothing -> Add_ (uri, base64)
+            Just _  -> Wrong_ $ CannotInsertExistingObject uri
 
         PublishQ uri base64 (Just hash) ->
           case existingHash uri of
-            Nothing -> Wrong $ ObjectNotFound uri
-            Just h  -> withHashCheck uri hash h $ Update (uri, base64, hash)
+            Nothing -> Wrong_ $ ObjectNotFound uri
+            Just h  -> withHashCheck uri hash h $ Update_ (uri, base64, hash)
+
         WithdrawQ uri hash ->
           case existingHash uri of
-            Nothing -> Wrong $ ObjectNotFound uri
-            Just h  -> withHashCheck uri hash h $ Delete (uri, hash)
+            Nothing -> Wrong_ $ ObjectNotFound uri
+            Just h  -> withHashCheck uri hash h $ Delete_ (uri, hash)
 
       | p <- pdus ]
 
 
     deltaP = catMaybes [
         case c of
-          Add (uri, base64)          -> Just $ Publish uri base64 Nothing
-          Update (uri, base64, hash) -> Just $ Publish uri base64 (Just hash)
+          Add_ (uri, base64)          -> Just $ Publish uri base64 Nothing
+          Update_ (uri, base64, hash) -> Just $ Publish uri base64 (Just hash)
           _                          -> Nothing
         | c <- changes ]
 
-    deltaW = [ Withdraw uri hash | Delete (uri, hash) <- changes ]
+    deltaW = [ Withdraw uri hash | Delete_ (uri, hash) <- changes ]
 
     newUrls  = S.fromList $
                  [ uri | Publish uri _ _ <- deltaP ] ++
@@ -174,7 +173,7 @@ updateRepo repo@(Repository
     newSnapshotP = onlyOldObjects ++ deltaP
 
     newSnapshot  = Snapshot (SnapshotDef version sessionId $ Serial newSerial) newSnapshotP
-    newDelta     = Delta (DeltaDef version sessionId $ Serial newSerial) deltaP deltaW
+    newDelta     = Delta (DeltaDef version sessionId (Serial newSerial) (ClientId "")) deltaP deltaW
     newDeltas    = M.insert newSerial newDelta existingDeltas
     newRepo      = Repository newSnapshot newDeltas
 
@@ -182,96 +181,8 @@ updateRepo repo@(Repository
     reply        = Message (Version mVersion) (publishR ++ withdrawR ++ reportErrors) :: Message ReplyPdu
     publishR     = [ PublishR    uri  | Publish uri _ _ <- deltaP  ]
     withdrawR    = [ WithdrawR   uri  | Withdraw uri _  <- deltaW  ]
-    reportErrors = [ ReportError err_ | Wrong err_      <- changes ]
+    reportErrors = [ ReportError err_ | Wrong_ err_      <- changes ]
 
-
-
-{-
-  Repository schema:
-
-  notification.xml
-  /x-session-id-1/snapshot.xml
-  /x-session-id-1/1/delta.xml
-  /x-session-id-1/2/delta.xml
-  ...
-  /session-id-1 -> x-session-id-1
-  ...
-  /x-session-id-2/snapshot.xml
-  /x-session-id-2/1/delta.xml
-  ...
-
--}
-readRepoFromFS :: AppOptions -> SessionId -> IO (Either RepoError AppState)
-readRepoFromFS (AppOptions {
-                  repositoryPathOpt = _repoPath,
-                  repositoryBaseUrlOpt = _urlBase
-                }) currentSessionId =
-
-  {- Read the whole directory content, each directory corresponds to a session,
-     in most practical cases there will be only one session -}
-  readRepo =<< readDirectoryWith L.readFile _repoPath
-
-  where
-
-    readRepo :: AnchoredDirTree L.ByteString -> IO (Either RepoError AppState)
-    readRepo (_ :/ Dir { contents = repoDirContent } ) = do
-      -- read sessions and separate successfull ones from broken ones.
-      let potentialRepositories = [ U.leftmap (sId,) $ (sId,) <$> readSession sId dir
-                                  | dir@Dir { name = sessionId } <- repoDirContent, let sId = SessionId $ T.pack sessionId ]
-
-      {- we don't enforce a restriction for all sessions to be valid,
-         so we only bail out in case of no valid sessions -}
-      return $ case partitionEithers potentialRepositories of
-                 ([],       []) -> Left $ CouldNotReadRepoDirectory _repoPath
-                 (badRepos, []) -> Left $ RepoESeq $ Prelude.map snd badRepos
-                 (_, goodRepos) -> createAppState goodRepos currentSessionId
-
-    -- it's not a directory (a file or a failure)
-    readRepo _ = return $ Left $ CouldNotReadRepoDirectory _repoPath
-
-    createAppState :: [(SessionId, Repository)] -> SessionId -> Either RepoError AppState
-    createAppState repos sId = U.maybeToEither (NotFoundSessionWithId sId) $
-      fmap (\cs -> AppState {
-           sessions              = sessionMap,
-           currentSession        = cs,
-           serializedCurrentRepo = serializeRepo cs _urlBase,
-           repoPath              = _repoPath,
-           repoUrlBase           = _urlBase
-        }) current
-        where
-          sessionMap = M.fromList repos
-          current    = M.lookup sId sessionMap
-
-    -- read one directory and try to find snapshot and the sequence of deltas in it
-    readSession :: SessionId -> DirTree L.ByteString -> Either RepoError Repository
-    readSession _ (File _ _) = Left $ NonFoundRepoDirectory $ "Wrong path " ++ _repoPath
-    readSession _ (Failed _name exception) = Left $ NonFoundRepoDirectory $ "Error occured for file " ++ _name ++ " " ++ show exception
-    readSession s (Dir { name = _, contents = content }) = do
-      snapshot <- readSnapshot content
-      _deltas  <- readDeltas content
-      verifyRepo $ Repository snapshot _deltas
-      where
-        {- find exactly one snapshot.xml inside of the assumed session store
-           TODO Find out if we really do the parsing in strict manner to
-                avoid "too many open files" problem -}
-        readSnapshot :: [DirTree L.ByteString] -> Either RepoError Snapshot
-        readSnapshot dirContent =
-          case [ f | f@File { name = n } <- dirContent, n == "snapshot.xml" ] of
-               [File { file = c }] -> U.leftmap (BadSnapshot s) $! XS.parseSnapshot c
-               _                   -> Left $ CannotFindSnapshot s
-
-        -- find "<serial_number>/delta.xml" inside of the session store
-        readDeltas :: [DirTree L.ByteString] -> Either RepoError DeltaMap
-        readDeltas dirContent =
-          case partitionEithers deltaList of
-            ([], parsed)  -> Right $ M.fromList parsed
-            (problems, _) -> Left $ RepoESeq $ Prelude.map (uncurry $ BadDelta s) problems
-          where
-            deltaList = do
-              (dName, dContent) <- [ (dName, dContent) | Dir { name = dName, contents = dContent } <- dirContent ]
-              fContent          <- [ fContent | File { name = fName, file = fContent} <- dContent, fName == "delta.xml"]
-              dSerial           <- rights [U.parseSerial dName]
-              return $ U.leftmap (dSerial,) $ fmap (dSerial,) $! XS.parseDelta fContent
 
 
 -- Check some precoditions of the repository consistency
@@ -284,15 +195,15 @@ verifyRepo r@(Repository (Snapshot (SnapshotDef version sessionId _) _) _deltas)
   where
     protocolVersion = Version 1
     deltaList = M.elems _deltas
-    matchingSessionId = Prelude.null [ sId | Delta (DeltaDef _ sId _) _ _ <- deltaList, sId /= sessionId ]
-    deltaVersion      = Prelude.null [ v   | Delta (DeltaDef v _ _) _ _   <- deltaList, v   /= protocolVersion ]
+    matchingSessionId = Prelude.null [ sId | Delta (DeltaDef _ sId _ _) _ _ <- deltaList, sId /= sessionId ]
+    deltaVersion      = Prelude.null [ v   | Delta (DeltaDef v _ _ _) _ _   <- deltaList, v   /= protocolVersion ]
 
 
 {- Write one more delta and replace snapshot.xml -}
 syncToFS :: Repository -> FilePath -> IO (Either RRDPError ())
 syncToFS (Repository s@(Snapshot (SnapshotDef _ (SessionId sId) (Serial serial)) _) _deltas) repoDir = do
-  _ <- catchIOError writeDelta $ \e -> return $ Left $ DeltaSyncError e
-  catchIOError writeSnapshot   $ \e -> return $ Left $ SnapshotSyncError e
+  _ <- writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
+  writeSnapshot   `catchIOError` \e -> return $ Left $ SnapshotSyncError e
   where
     snapshotTmpName = sessionStoreDir </> "snapshot.xml.tmp"
     snapshotName    = sessionStoreDir </> "snapshot.xml"
@@ -326,36 +237,37 @@ applyToRepo repo queryXml = do
     mapParseError (Right r) = Right r
 
 
-actionSeq :: ClientId -> [QueryPdu] -> Map URI ST.RepoObject -> [ObjOperation (URI, Base64) (URI, Base64) URI RepoError]
+actionSeq :: ClientId -> [QueryPdu] -> Map URI ST.RepoObject -> [Action]
 actionSeq clientId pdus uriMap = [
   let
     withClientIdCheck objUri sClientId f
         | sClientId == clientId = f
-        | otherwise = Wrong CannotChangeOtherClientObject { oUri = objUri, storedClientId = sClientId, queryClientId = clientId }
+        | otherwise = Wrong_ CannotChangeOtherClientObject { oUri = objUri, storedClientId = sClientId, queryClientId = clientId }
 
     withHashCheck uri queryHash storedHash f
         | queryHash == storedHash = f
-        | otherwise = Wrong BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+        | otherwise = Wrong_ BadHash { passed = queryHash, stored = storedHash, uriW = uri }
     in
     case p of
       PublishQ uri base64 Nothing ->
         case M.lookup uri uriMap of
-          Nothing -> Update (uri, base64)
-          Just _  -> Wrong $ CannotInsertExistingObject uri
+          Nothing -> Update_ (uri, base64)
+          Just _  -> Wrong_ $ CannotInsertExistingObject uri
 
       PublishQ uri base64 (Just hash) ->
         case M.lookup uri uriMap of
-          Nothing -> Wrong $ ObjectNotFound uri
+          Nothing -> Wrong_ $ ObjectNotFound uri
           Just (ST.RepoObject { ST.base64 = Base64 _ h, ST.clientId = cId }) ->
-            withClientIdCheck uri cId $ withHashCheck uri hash h $ Update (uri, base64)
+            withClientIdCheck uri cId $ withHashCheck uri hash h $ Update_ (uri, base64)
 
       WithdrawQ uri hash ->
         case M.lookup uri uriMap of
-          Nothing -> Wrong $ ObjectNotFound uri
+          Nothing -> Wrong_ $ ObjectNotFound uri
           Just (ST.RepoObject { ST.base64 = Base64 _ h, ST.clientId = cId }) ->
-            withClientIdCheck uri cId $ withHashCheck uri hash h $ Delete uri
+            withClientIdCheck uri cId $ withHashCheck uri hash h $ Delete_ uri
 
   | p <- pdus ]
+
 
 actions :: AcidState ST.Repo -> [QueryPdu] -> ClientId -> IO [ObjOperation (URI, Base64) (URI, Base64) URI RepoError]
 actions repo pdus clientId = do
@@ -369,28 +281,20 @@ actions repo pdus clientId = do
             | p <- pdus ]
 
 
-{-
-add :: RepoObject -> Update Repo ()
-add obj = do
-  Repo r <- get
-  put $ Repo $ IX.updateIx (uri obj) obj r
--}
-
-updateRepo1 :: AcidState (EventState ST.GetByURI) -> [QueryPdu] -> ClientId -> IO [EventResult ST.Add]
-updateRepo1 repo pdus clientId = do
-  as <- actions repo pdus clientId
-  sequence [ case action of
-        Update (uri, base64) -> update' repo (ST.Add ST.RepoObject { ST.clientId = clientId, ST.uri = uri, ST.base64 = base64 })
-        Delete uri           -> update' repo (ST.Delete uri)
-     | action <- as ]
-
-
-processMessage2 :: AcidState ST.Repo -> AppState -> L.ByteString -> ClientId -> Either RRDPError (AcidState ST.Repo)
+-- TODO Need to handle errors
+processMessage2 :: AcidState ST.Repo -> AppState -> L.ByteString -> ClientId -> Either RRDPError (AcidState ST.Repo, L.ByteString)
 processMessage2 repo appState queryXml clientId = do
-    Message version pdus <- mapParseError $ XS.parseMessage queryXml
-    let z = updateRepo1 repo pdus clientId
-    Right repo
+    m@(Message version pdus) <- mapParseError $ XS.parseMessage queryXml
+    Right (repo, "")
     where
+      z = do
+        (sessionId, serial) <- query' repo ST.GetInfo
+        -- TODO Create real delta
+        let delta = Delta (DeltaDef (Version 1) sessionId serial clientId) [] []
+        as <- actions repo [] clientId
+        update' repo (ST.ApplyActions clientId delta as)
+        return (repo, "")
+
       mapParseError (Left e)  = Left $ BadMessage e
       mapParseError (Right r) = Right r
 
