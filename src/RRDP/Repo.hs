@@ -4,8 +4,6 @@
 module RRDP.Repo where
 
 import           Control.Applicative
-import           Control.Monad.IO.Class
-import           Data.Either
 import           Data.Map                   as M
 import           Data.Maybe
 import           Data.Set                   as S
@@ -15,18 +13,17 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Text                  as T
 
 import           Data.Acid
-import Data.Acid.Advanced   (update', query')
+import           Data.Acid.Advanced         (query', update')
 
 
 import           System.Directory
-import           System.Directory.Tree
 import           System.FilePath
 import           System.IO.Error
 
 import qualified RRDP.XML                   as XS
+import qualified Store                      as ST
 import           Types
 import qualified Util                       as U
-import qualified Store                      as ST
 
 
 type RRDPValue r = Either RRDPError r
@@ -282,8 +279,8 @@ actions repo pdus clientId = do
 
 
 -- TODO Need to handle errors
-processMessage2 :: AcidState ST.Repo -> AppState -> L.ByteString -> ClientId -> Either RRDPError (AcidState ST.Repo, L.ByteString)
-processMessage2 repo appState queryXml clientId = do
+processMessage2 :: AcidState ST.Repo -> L.ByteString -> ClientId -> Either RRDPError (AcidState ST.Repo, L.ByteString)
+processMessage2 repo queryXml clientId = do
     m@(Message version pdus) <- mapParseError $ XS.parseMessage queryXml
     Right (repo, "")
     where
@@ -297,6 +294,24 @@ processMessage2 repo appState queryXml clientId = do
 
       mapParseError (Left e)  = Left $ BadMessage e
       mapParseError (Right r) = Right r
+
+
+snapshotXmlAcid :: AcidState ST.Repo -> SnapshotDef -> IO RRDPResponse
+snapshotXmlAcid repo snapshotDef = do
+  ros <- query' repo ST.GetAllObjects
+  let publishElements = [ XS.publishElem u b64 Nothing | ST.RepoObject { ST.uri = u, ST.base64 = b64 } <- ros ]
+  return $ Right $ U.lazy $ XS.format $ XS.snapshotElem snapshotDef publishElements
+
+
+deltaXmlAcid :: AcidState ST.Repo -> DeltaDef -> IO RRDPResponse
+deltaXmlAcid repo dd@(DeltaDef _ sessionId serial _) = do
+  d <- query' repo (ST.GetDelta serial)
+  return $ case d of
+    Just (Delta _ ps ws) -> Right $ U.lazy $ XS.format $ XS.deltaElem dd publishElements withdrawElements
+      where
+        publishElements  = [ XS.publishElem u b64 mHash | Publish u b64 mHash <- ps ]
+        withdrawElements = [ XS.withdrawElem u hash | Withdraw u hash   <- ws ]
+    Nothing -> Left $ NoDelta sessionId serial
 
 
 ---------

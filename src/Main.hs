@@ -9,13 +9,14 @@ import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
 import           Control.Monad.Trans.Class  (lift)
 import qualified Data.ByteString.Lazy.Char8 as L
-import           Happstack.Server           (ServerPart, askRq, badRequest, dir,
-                                             method, notFound, ok, path,
-                                             setHeaderM, simpleHTTP)
+import           Happstack.Server           (ServerPart, asContentType, askRq,
+                                             badRequest, dir, method, notFound,
+                                             ok, path, serveFile, setHeaderM,
+                                             simpleHTTP, toResponse, ToMessage)
 import           Happstack.Server.Types
 
-import           Data.Acid                  (openLocalState, AcidState)
-import Data.Acid.Advanced   (update', query')
+import           Data.Acid                  (AcidState, openLocalState)
+import           Data.Acid.Advanced         (query', update')
 
 import           Data.Acid.Local            (createCheckpointAndClose)
 
@@ -47,40 +48,35 @@ instance Options AppOptions where
       <*> simpleOption "session" "" "Actual session id"
 
 main :: IO ()
-main = runCommand $ \opts _ -> do
-    existingRepo <- readRepoFromFS opts (SessionId $ T.pack $ currentSessionOpt opts)
-    case existingRepo of
-      Left e -> die $ "Repository at the location " ++ show (repositoryPathOpt opts) ++
-                      " is not found or can not be read, error: " ++ show e ++ "."
-      Right appState -> setupWebApp appState
-        -- print $ "1111" ++ repoPath appState --setupWebApp appState
+main = runCommand $ \opts _ -> setupWebAppAcid opts
 
 
-setupWebApp :: AppState -> IO ()
-setupWebApp appState = bracket (openLocalState ST.initialStore) createCheckpointAndClose
-  (\acid -> do
-    let repository           = currentSession appState
-    let serializedRepository = serializedCurrentRepo appState
-    (repositoryState, serializedRepoState) <- atomically $ do
-       rep    <- newTVar repository
-       serRep <- newTVar serializedRepository
-       return (rep, serRep)
+setupWebAppAcid :: AppOptions -> IO ()
+setupWebAppAcid appOptions@(AppOptions { currentSessionOpt = sId }) =
+  bracket (openLocalState $ initialState sId) createCheckpointAndClose
+  (\acid ->
+      simpleHTTP nullConf { port = defaultPort } $ msum
+        [ dir "message" $ method POST >>
+             rpkiContentType (processMessageAcid acid),
 
-    simpleHTTP nullConf { port = defaultPort } $ msum
-      [ dir "message" $ method POST >>
-          (rpkiContentType $ processMessage repositoryState serializedRepoState appState),
+          dir "notification.xml" $ method GET >>
+            serveXml appOptions "notification.xml",
 
-        dir "notification.xml" $ method GET >>
-          (rrdpContentType $ notificationXml serializedRepoState >>= respondRRDP),
+          path $ \sessionId -> dir "snapshot.xml" $ method GET >>
+            serveXml appOptions (sessionId ++ "/snapshot.xml"),
 
-        path $ \sessionId -> dir "snapshot.xml" $ method GET >>
-          (rrdpContentType $ snapshotXmlFile serializedRepoState sessionId >>= respondRRDP),
-
-        path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
-          (rrdpContentType $ deltaXmlFile serializedRepoState sessionId deltaNumber >>= respondRRDP)
-      ]
-  )
-
+          path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
+            let
+              serveDelta :: String -> Integer -> ServerPart Response
+              serveDelta sid dn = serveXml appOptions $ sid ++ "/" ++ show dn ++ "/delta.xml"
+            in serveDelta sessionId deltaNumber
+        ]
+    )
+  where
+    serveXml :: AppOptions -> String -> ServerPart Response
+    serveXml (AppOptions { repositoryPathOpt = path }) name =
+      serveFile (asContentType "application/rpki-publication") $ path ++ name
+    initialState sId = ST.initialStore (SessionId $ T.pack sId)
 
 rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
 rpkiContentType response = setHeaderM "Content-Type" "application/rpki-publication" >> response
@@ -89,83 +85,37 @@ rpkiContentType response = setHeaderM "Content-Type" "application/rpki-publicati
 rrdpContentType response = setHeaderM "Content-Type" "text/xml" >> response
 
 
-respondRRDP :: Either RRDPError L.ByteString -> ServerPart L.ByteString
-respondRRDP (Right response) = ok response
+respondRRDP :: Either RRDPError L.ByteString -> ServerPart Response
+respondRRDP (Right response) = mkResp ok response
 
-respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = notFound $
+respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = mkResp notFound $
   L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
 
-respondRRDP (Left (NoSnapshot (SessionId sessionId))) = notFound $
+respondRRDP (Left (NoSnapshot (SessionId sessionId))) = mkResp notFound $
   L.pack $ "No snapshot for session_id " ++ show sessionId
 
 -- respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
 --   L.pack $ "The replacement for the object " ++ show u ++ " has hash "
 --                ++ show s ++ " but is expected to have hash " ++ show p
 
-respondRRDP (Left (BadMessage parseError)) = badRequest $ L.pack $ "Message parse error " ++ show parseError
+respondRRDP (Left (BadMessage parseError)) = mkResp badRequest $ L.pack $ "Message parse error " ++ show parseError
 
-respondRRDP (Left e) = badRequest $ L.pack $ "Error: " ++ show e
+respondRRDP (Left e) = mkResp badRequest $ L.pack $ "Error: " ++ show e
+
+mkResp :: ToMessage a => (Response -> t) -> a -> t
+mkResp resp output = resp $ toResponse output
 
 
-processMessageAcid :: AcidState ST.Repo -> AppState -> ServerPart L.ByteString
-processMessageAcid acid appState = do
+processMessageAcid :: AcidState ST.Repo -> ServerPart Response
+processMessageAcid acid = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
       Just rqbody -> respond rqbody
-      Nothing     -> badRequest "Request has no body"
+      Nothing     -> mkResp badRequest $ L.pack "Request has no body"
     where
       -- TODO Read in from the request as well
       clientId = ClientId "defaultClientId"
 
-      respond :: RqBody -> ServerPart L.ByteString
-      respond rqbody = respondRRDP $ snd <$> processMessage2 acid appState (unBody rqbody) clientId
-
-
-processMessage :: TVar Repository -> TVar SerializedRepo -> AppState -> ServerPart L.ByteString
-processMessage repository serializedRepo appState = do
-    req  <- askRq
-    body <- liftIO $ takeRequestBody req
-    case body of
-      Just rqbody -> respond rqbody
-      Nothing     -> badRequest "Request has no body"
-    where
-      respond :: RqBody -> ServerPart L.ByteString
-      respond rqbody = do
-        -- apply changes to in-memory repo first
-        _result <- liftIO $ applyChange $ unBody rqbody
-        mapRrdp _result $ \(reply, repo) -> do
-          syncResult <- liftIO $ syncToFS repo $ repoPath appState
-          mapRrdp syncResult $ \_ -> ok reply
-
-      mapRrdp (Left e)  _ = respondRRDP $ Left e
-      mapRrdp (Right x) f = f x
-
-      applyChange :: L.ByteString -> IO (Either RRDPError (L.ByteString, Repository))
-      applyChange request = atomically $ do
-        repoState <- readTVar repository
-        case applyToRepo repoState request of
-          Right (newRepo, reply) -> do
-            writeTVar repository newRepo
-            writeTVar serializedRepo $ serializeRepo newRepo $ repoUrlBase appState
-            return $ Right (reply, newRepo)
-          Left  e -> return $ Left e
-
-
-notificationXml :: TVar SerializedRepo -> ServerPart RRDPResponse
-notificationXml serializedRepo = lift $ atomically $ do
-    repo <- readTVar serializedRepo
-    return $ Right $ notificationS repo
-
--- TODO Handle requests for non-current sessions as well
--- TODO Simply read the files from FS and stream them to the client (happstack??)
-snapshotXmlFile :: TVar SerializedRepo -> String -> ServerPart RRDPResponse
-snapshotXmlFile serializedRepo sessionId = lift $ atomically $ do
-    repo <- readTVar serializedRepo
-    return $ Right $ snapshotS repo
-
-deltaXmlFile :: TVar SerializedRepo -> String -> Int -> ServerPart RRDPResponse
-deltaXmlFile serializedRepo sessionId deltaNumber = lift $ atomically $ do
-    repo <- readTVar serializedRepo
-    return $ maybeToEither (NoDelta (SessionId $ T.pack sessionId) (Serial deltaNumber)) $
-             serializedDelta repo deltaNumber
+      respond :: RqBody -> ServerPart Response
+      respond rqbody = respondRRDP $ snd <$> processMessage2 acid (unBody rqbody) clientId

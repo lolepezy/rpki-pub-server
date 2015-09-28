@@ -8,6 +8,7 @@ module Store where
 import           Control.Monad.Reader (ask)
 import           Control.Monad.State  (get, put)
 
+import           Data.Maybe
 import           Data.Set             (fromList, member)
 
 import           Data.Acid            (Query, Update, makeAcidic)
@@ -58,18 +59,16 @@ getByClientId = getByA
 getByURI :: URI -> Query Repo (Maybe RepoObject)
 getByURI uri = do
   o <- getByA uri
-  return $ case o of
-    [x] -> Just x
-    _   -> Nothing
+  return $ listToMaybe o
 
 getByURIs :: [URI] -> Query Repo [RepoObject]
 getByURIs uris = do
-  Repo _ _ objs d <- ask
+  Repo _ _ objs _ <- ask
   return $ toList $ objs @+ uris
 
 getByA :: Typeable a => a -> Query Repo [RepoObject]
 getByA f = do
-  Repo _ _ objs d <- ask
+  Repo _ _ objs _ <- ask
   return $ toList $ objs @= f
 
 getInfo :: Query Repo (SessionId, Serial)
@@ -77,13 +76,29 @@ getInfo = do
   Repo sessionId serial _ _  <- ask
   return (sessionId, serial)
 
+getAllObjects :: Query Repo [RepoObject]
+getAllObjects = do
+  Repo _ _ objs _ <- ask
+  return $ toList objs
+
+getAllDeltas :: Query Repo [Delta]
+getAllDeltas = do
+  Repo _ _ _ deltas <- ask
+  return $ toList deltas
+
+getDelta :: Serial -> Query Repo (Maybe Delta)
+getDelta serial = do
+  Repo _ _ _ deltas <- ask
+  return $ listToMaybe $ toList $ deltas @= serial
+
+
 applyActions :: ClientId -> Delta -> [Action] -> Update Repo Repo
-applyActions cId delta@(Delta {}) actions = do
+applyActions cId delta actions = do
   Repo sessionId serial objects deltas <- get
   -- TODO replace Add and Update with just one of them
   let toDelete = fromList [ uri | Delete_ uri <- actions ]
   let adds    = [ RepoObject { uri = u, base64 = base64, clientId = cId } | Add_  (u, base64) <- actions, keep u toDelete ]
-  let updates = [ RepoObject { uri  = u, base64 = base64, clientId = cId } | Update_ (u, base64) <- actions, keep u toDelete ]
+  let updates = [ RepoObject { uri = u, base64 = base64, clientId = cId } | Update_ (u, base64) <- actions, keep u toDelete ]
   let newR = foldl (\accum r -> IX.updateIx (uri r) r accum) objects $ adds ++ updates
   let newD = IX.updateIx serial delta deltas
   let repo = Repo sessionId (next serial) newR newD
@@ -93,8 +108,8 @@ applyActions cId delta@(Delta {}) actions = do
     next (Serial s) = Serial (s + 1)
     keep u toDelete = not $ u `member` toDelete
 
-initialStore :: SessionId -> Serial -> Repo
-initialStore sId s = Repo sId s IX.empty IX.empty
+initialStore :: SessionId -> Repo
+initialStore sId = Repo sId (Serial 0) IX.empty IX.empty
 
-$(makeAcidic ''Repo [ 'getByURI, 'getByURIs, 'getInfo, 'applyActions ])
+$(makeAcidic ''Repo [ 'getByURI, 'getByURIs, 'getInfo, 'getDelta, 'getAllObjects, 'applyActions ])
 $(makeAcidic ''Deltas [ ])
