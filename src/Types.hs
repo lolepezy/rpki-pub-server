@@ -2,6 +2,7 @@
 {-# LANGUAGE TemplateHaskell    #-}
 module Types where
 
+import Control.Concurrent.MVar
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Data.Data                  (Data, Typeable)
 import           Data.SafeCopy              (base, deriveSafeCopy)
@@ -96,17 +97,13 @@ data RepoError = CannotFindSnapshot SessionId
               | RepoESeq [RepoError]
   deriving (Eq, Show, Typeable, Data)
 
-data AppOptions = AppOptions {
-  repositoryPathOpt    :: String,
-  repositoryBaseUrlOpt :: String,
-  currentSessionOpt    :: String
-}
-
 -- private utility type to make logic easier to understand
 data ObjOperation a u d w = Add_ a | Update_ u | Delete_ d | Wrong_ w
   deriving (Eq, Show, Typeable, Data)
 
 type Action = ObjOperation (URI, Base64) (URI, Base64) URI RepoError
+
+type SyncFlag = MVar Bool
 
 $(deriveSafeCopy 0 'base ''Hash)
 $(deriveSafeCopy 0 'base ''Serial)

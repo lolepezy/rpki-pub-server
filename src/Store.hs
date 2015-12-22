@@ -46,12 +46,13 @@ data Deltas = Deltas (IxSet Delta)
 
 instance Indexable Delta where
   empty = ixSet [
-      ixGen (IX.Proxy :: IX.Proxy ClientId)
-      -- ,ixFun $ \delta -> [ uri bp ]
+      ixGen (IX.Proxy :: IX.Proxy ClientId),
+      ixGen (IX.Proxy :: IX.Proxy Serial)
     ]
 
 $(deriveSafeCopy 0 'base ''Deltas)
 
+type StoredData = (SessionId, Serial, [RepoObject], [Delta])
 
 getByClientId :: ClientId -> Query Repo [RepoObject]
 getByClientId = getByA
@@ -81,15 +82,22 @@ getAllObjects = do
   Repo _ _ objs _ <- ask
   return $ toList objs
 
-getAllDeltas :: Query Repo [Delta]
-getAllDeltas = do
-  Repo _ _ _ deltas <- ask
-  return $ toList deltas
-
 getDelta :: Serial -> Query Repo (Maybe Delta)
 getDelta serial = do
   Repo _ _ _ deltas <- ask
   return $ listToMaybe $ toList $ deltas @= serial
+
+getRepo :: Query Repo StoredData
+getRepo = do
+  Repo sessionId serial objects deltas  <- ask
+  return (sessionId, serial, toList objects, toList deltas)
+
+removeDelta :: Serial -> Update Repo Repo
+removeDelta serial = do
+  Repo sessionId rSerial objs deltas <- get
+  let r1 = Repo sessionId rSerial objs $ IX.deleteIx serial deltas
+  put r1
+  return r1
 
 
 applyActions :: ClientId -> Delta -> [Action] -> Update Repo Repo
@@ -108,8 +116,9 @@ applyActions cId delta actions = do
     next (Serial s) = Serial (s + 1)
     keep u toDelete = not $ u `member` toDelete
 
+
 initialStore :: SessionId -> Repo
 initialStore sId = Repo sId (Serial 0) IX.empty IX.empty
 
-$(makeAcidic ''Repo [ 'getByURI, 'getByURIs, 'getInfo, 'getDelta, 'getAllObjects, 'applyActions ])
+$(makeAcidic ''Repo [ 'getByURI, 'getByURIs, 'getInfo, 'getDelta, 'removeDelta, 'getAllObjects, 'getRepo, 'applyActions ])
 $(makeAcidic ''Deltas [ ])

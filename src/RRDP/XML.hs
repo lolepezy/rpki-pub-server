@@ -11,8 +11,6 @@ import qualified Util as U
 
 import Network.URI
 
-import Control.Applicative ((<*>), (<$>))
-
 import qualified Text.Read as TR
 
 import qualified Data.Text as T
@@ -36,7 +34,7 @@ extractPdus pduChildren publishC withdrawC = (,) <$>
         _                                      -> Nope
         ) pduChildren
 
-    getBase64 pChildren = T.concat [ T.filter (`notElem` " \n\t") t | XT.Text t <- pChildren ]
+    getBase64 pChildren = T.concat [ T.filter (`notElem` [' ', '\n', '\t']) t | XT.Text t <- pChildren ]
 
 
 getAttr :: [(T.Text, T.Text)] -> String -> Maybe T.Text

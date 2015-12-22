@@ -19,7 +19,7 @@ executable rpki-pub-server
   main-is:             Main.hs
   hs-source-dirs:      src
 
-  ghc-options:         -O2 -threaded -Wall -rtsopts -prof -auto-all -caf-all -fforce-recomp
+  ghc-options:         -O2 -threaded -Wall -rtsopts -auto-all -caf-all -fprof-auto -osuf p_o -hisuf p_hi
 
   build-depends:     base >=4.6
                     ,happstack-server >= 7.4

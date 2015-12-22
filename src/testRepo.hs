@@ -19,7 +19,7 @@ serialize rr = do
 
 
 main = do
-  let opts = AppOptions {
+  let opts = AppConfig {
     repositoryPathOpt = "../test/actual/",
     repositoryBaseUrlOpt = "http://localhost:9999",
     currentSessionOpt = "9df4b597-af9e-4dca-bdda-719cce2c4e28"
