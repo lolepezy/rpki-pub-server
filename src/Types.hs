@@ -77,6 +77,7 @@ data RRDPError = NoSnapshot SessionId
               | BadMessage ParseError
               | SnapshotSyncError IOError
               | DeltaSyncError IOError
+              | NotificationSyncError IOError
               | InconsistentSerial Int
   deriving (Eq, Show)
 
