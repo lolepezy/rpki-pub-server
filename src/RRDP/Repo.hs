@@ -4,9 +4,13 @@
 module RRDP.Repo where
 
 import           Control.Monad
+import           Control.Monad.Trans
+import           Control.Monad.Trans.Either
+import           Control.Exception.Base
 import           Control.Concurrent
 import           Control.Monad.IO.Class
 import           Data.Map                   as M
+import           Data.List                  (sortBy)
 import           Data.Maybe
 import           Network.URI
 
@@ -103,119 +107,93 @@ sessionInfo :: MonadIO m => AcidState (EventState ST.GetInfo) -> m (EventResult 
 sessionInfo repo = query' repo ST.GetInfo
 
 
+processMessage :: AcidState ST.Repo -> AppConfig -> ClientId -> SyncFlag -> L.ByteString -> IO (Either RRDPError (AcidState ST.Repo, L.ByteString))
+processMessage repo _ clientId syncFlag queryXml = runEitherT $ do
+  (Message _ pdus)       <- hoistEither $ U.leftmap BadMessage $ XS.parseMessage queryXml
+  (sessionId, serial, _) <- sessionInfo repo
+  repoActions            <- tryIO DeltaSyncError $ actions repo pdus clientId
+
+  let publishes = [ Publish u b h | PublishQ u b h <- pdus ]
+  let withdraws = [ Withdraw u h  | WithdrawQ u h <- pdus  ]
+  let delta = Delta (DeltaDef (Version 1) sessionId serial clientId) publishes withdraws
+
+  let errors       = [ ReportError err | Wrong_ err      <- repoActions ]
+  let publishR     = [ PublishR    uri | Publish uri _ _ <- publishes  ]
+  let withdrawR    = [ WithdrawR   uri | Withdraw uri _  <- withdraws  ]
+  let replyMessage = Message (Version 1) (errors ++ publishR ++ withdrawR)
+
+  _ <- tryIO DeltaSyncError $ update' repo (ST.ApplyActions clientId delta repoActions)
+  _ <- tryIO DeltaSyncError notifySnapshotWritingThread
+
+  return (repo, XS.createReply replyMessage)
+  where
+    notifySnapshotWritingThread = tryPutMVar syncFlag True
+    tryIO anError io = EitherT $ U.leftmap anError <$> tryIOError io
+
+
 syncThread :: AcidState ST.Repo -> AppConfig -> SyncFlag -> IO ()
 syncThread repo appContext syncFlag = forever $ do
   _ <- readMVar syncFlag
-  (sessionId@(SessionId sId), serial, objects, _) <- query' repo ST.GetRepo
-  syncS <- syncSnapshot repo appContext
-  syncS1 <- syncSnapshot repo appContext
-  -- make it configurable
+  repoState <- query' repo ST.GetRepo
+  syncS <- syncToFS repoState appContext
+  let result = case syncS of
+        Left e ->
+          -- log the message and complain
+          return ()
+        Right r ->
+          void $ update' repo ST.MarkSync
+
+  -- TODO make it configurable
   threadDelay $ 10*1000*1000
-  return ()
-
-{-
-
- main thread:
-    if (flagIsEmpty)
-      tryPutMVar snapshotIsReady (sessionId, serial)
+  result
 
 
- sync thread:
-   forever:
-    (sessionId, serial) <- readMVar snapshotIsReady
-    syncSnapshot sessionId serial
-    threadDelay N seconds
-
--}
-
-
-
-processMessage :: AcidState ST.Repo -> AppConfig -> ClientId -> SyncFlag -> L.ByteString -> IO (Either RRDPError (AcidState ST.Repo, L.ByteString))
-processMessage repo appContext clientId syncFlag queryXml =
-    case XS.parseMessage queryXml of
-      Left err -> return $ Left $ BadMessage err
-      Right (Message _ pdus) -> do
-        (sessionId, serial) <- sessionInfo repo
-        repoActions         <- actions repo pdus clientId
-
-        let publishes = [ Publish u b h | PublishQ u b h <- pdus ]
-        let withdraws = [ Withdraw u h  | WithdrawQ u h <- pdus  ]
-        let delta = Delta (DeltaDef (Version 1) sessionId serial clientId) publishes withdraws
-
-        let errors       = [ ReportError err | Wrong_ err <- repoActions ]
-        let publishR     = [ PublishR    uri | Publish uri _ _ <- publishes  ]
-        let withdrawR    = [ WithdrawR   uri | Withdraw uri _  <- withdraws  ]
-        let replyMessage = Message (Version 1) (errors ++ publishR ++ withdrawR)
-
-        -- TODO Process errors
-        _ <- update' repo (ST.ApplyActions clientId delta repoActions)
-                      -- `catchIOError` \e -> return $ Left $ DeltaSyncError e
-
-        -- write delta file synchronously
-        deltaResult <- syncDelta delta appContext
-
-        _ <- notifySnapshotWritingThread
-
-        return $ const (repo, XS.createReply replyMessage) <$> deltaResult
-        where
-          notifySnapshotWritingThread = liftIO $ tryPutMVar syncFlag True
-
-
-syncDelta :: Delta -> AppConfig -> IO (Either RRDPError ())
-syncDelta d@(Delta (DeltaDef _ (SessionId sId) (Serial s) _) _ _) AppConfig { repositoryPathOpt = repoDir } =
-  writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
+syncToFS :: ST.RepoState -> AppConfig -> IO (Either RRDPError ())
+syncToFS repoState@(sessionId@(SessionId sId), serial, objects, deltas, latestSerial)
+         AppConfig { repositoryPathOpt = repoDir, repositoryBaseUrlOpt = repoUrl } = do
+  writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
+  writeDeltas `catchIOError` \e -> return $ Left $ DeltaSyncError e
+  writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
   where
-    storeDir = repoDir </> T.unpack sId </> show s
-    writeDelta = do
+    snapshotDef = SnapshotDef (Version 3) sessionId serial
+    snapshotXml = serializeSnapshot objects snapshotDef
+    storeDir = repoDir </> T.unpack sId </> show serial
+
+    writeLastSnapshot = do
       createDirectoryIfMissing False storeDir
-      L.writeFile (storeDir </> "delta.xml") $ serializeDelta d
+      L.writeFile (storeDir </> "snapshot.xml") snapshotXml
       return $ Right ()
 
+    writeDeltas = do
+        let notSynchedDeltas = sortBy deltaOrder $ Prelude.filter (`notSyncedYet` latestSerial) deltas
+        Right <$> mapM_ (\d -> do
+                          let deltaDir = repoDir </> T.unpack sId </> show serial
+                          createDirectoryIfMissing False deltaDir
+                          L.writeFile (storeDir </> "delta.xml") $ serializeDelta d)
+                       notSynchedDeltas
 
-syncSnapshot :: AcidState ST.Repo -> AppConfig -> IO (Either RRDPError ())
-syncSnapshot repo AppConfig { repositoryPathOpt = repoDir } =
-  writeSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
-  where
-    writeSnapshot = do
-      (sessionId@(SessionId sId), serial, objects, _) <- query' repo ST.GetRepo
-      let storeDir = repoDir </> T.unpack sId </> show serial
-      createDirectoryIfMissing False storeDir
-      L.writeFile (storeDir </> "snapshot.xml") $ serializeSnapshot objects $ SnapshotDef (Version 3) sessionId serial
+    writeNotification = do
+      L.writeFile (repoDir </> "notification.xml.tmp") $ serializeNotification repoState snapshotXml repoUrl
+      renameFile (repoDir </> "notification.xml.tmp") (repoDir </> "notification.xml")
       return $ Right ()
 
+    notSyncedYet (Delta (DeltaDef _ _ (Serial s) _) _ _) (Serial lastSync) = s > lastSync
+    deltaOrder (Delta (DeltaDef _ _ (Serial s1) _) _ _)
+               (Delta (DeltaDef _ _ (Serial s2) _) _ _) = compare s1 s2
 
 
-serializeNotification1 :: ST.StoredData -> String -> L.ByteString
-serializeNotification1 (SessionId sId, Serial s, _, _) _repoUrlBase =
+
+serializeNotification :: ST.RepoState -> L.ByteString -> String -> L.ByteString
+serializeNotification repoState@(sessionId@(SessionId sId), Serial serial, _, deltas, _) snapshotXml _repoUrlBase =
   U.lazy $ XS.format $ XS.notificationElem sd elements
   where
-    elements = [ snapshotDefElem sUri (U.getHash $ U.lazy sSnapshot)
-               | sUri <- maybeToList snapshotUri ] ++
-               [ deltaDefElem   dUri (U.getHash $ U.lazy sDelta) serial
-               | (serial, _) <- M.toList _deltas,
-                  sDelta     <- maybeToList $ M.lookup serial sDeltas,
-                  dUri       <- maybeToList $ deltaUri serial ]
+    sd = SnapshotDef (Version 3) sessionId (Serial serial)
+    elements = [ snapshotDefElem sUri (U.getHash $ U.lazy snapshotXml)
+               | sUri <- maybeToList $ snapshotUri serial ] ++
+               [ deltaDefElem (deltaUri s) (U.getHash . U.lazy $ serializeDelta d) s
+               | d@(Delta (DeltaDef _ _ s _) _ _) <- deltas ]
 
-    snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/snapshot.xml"
-    deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
-
-    snapshotDefElem uri (Hash hash)     = XS.mkElem "snapshot" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
-    deltaDefElem uri (Hash hash) serial = XS.mkElem "delta" [("uri", U.pack $ show uri), ("hash", U.strict hash), ("serial", U.pack $ show serial)] []
-
-
-
-serializeNotification :: Repository -> String -> L.ByteString -> Map Int L.ByteString -> L.ByteString
-serializeNotification (Repository (Snapshot sd@(SnapshotDef _ (SessionId sId) _) _) _deltas) _repoUrlBase sSnapshot sDeltas =
-  U.lazy $ XS.format $ XS.notificationElem sd elements
-  where
-    elements = [ snapshotDefElem sUri (U.getHash $ U.lazy sSnapshot)
-               | sUri <- maybeToList snapshotUri ] ++
-               [ deltaDefElem   dUri (U.getHash $ U.lazy sDelta) serial
-               | (serial, _) <- M.toList _deltas,
-                  sDelta     <- maybeToList $ M.lookup serial sDeltas,
-                  dUri       <- maybeToList $ deltaUri serial ]
-
-    snapshotUri = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/snapshot.xml"
+    snapshotUri s = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/snapshot.xml"
     deltaUri s  = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
 
     snapshotDefElem uri (Hash hash)     = XS.mkElem "snapshot" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
