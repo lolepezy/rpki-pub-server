@@ -2,8 +2,6 @@
 
 import           System.Exit
 
-import           Control.Concurrent
-import           Control.Concurrent.MVar
 import           Control.Exception          (bracket)
 import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
@@ -15,10 +13,8 @@ import           Happstack.Server           (ServerPart, ToMessage,
                                              toResponse)
 import           Happstack.Server.Types
 
-import           Data.Acid                  (AcidState, openLocalState)
+import           Data.Acid                  (openLocalState)
 import           Data.Acid.Local            (createCheckpointAndClose)
-
-import qualified Data.Text                  as T
 import           Options
 
 import           Config
@@ -35,25 +31,24 @@ main = runCommand $ \opts _ -> setupWebAppAcid opts
 
 
 setupWebAppAcid :: AppConfig -> IO ()
-setupWebAppAcid appContext @ AppConfig { currentSessionOpt = sId } =
-  bracket (openLocalState initialState) createCheckpointAndClose
+setupWebAppAcid appConf =
+  bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
-      changeSet <- newEmptyMVar
-      forkIO $ rrdpSyncThread acid appContext changeSet
+      appState <- initAppState appConf acid
       simpleHTTP nullConf { port = defaultPort } $ msum
         [ dir "message" $ method POST >>
-             rpkiContentType (processMessageAcid acid appContext changeSet),
+             rpkiContentType (processMessageAcid appState),
 
           dir "notification.xml" $ method GET >>
-            serveXml appContext "notification.xml",
+            serveXml appConf "notification.xml",
 
           path $ \sessionId -> dir "snapshot.xml" $ method GET >>
-            serveXml appContext (sessionId ++ "/snapshot.xml"),
+            serveXml appConf (sessionId ++ "/snapshot.xml"),
 
           path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
             let
               serveDelta :: String -> Integer -> ServerPart Response
-              serveDelta sid dn = serveXml appContext $ sid ++ "/" ++ show dn ++ "/delta.xml"
+              serveDelta sid dn = serveXml appConf $ sid ++ "/" ++ show dn ++ "/delta.xml"
             in serveDelta sessionId deltaNumber
         ]
     )
@@ -61,11 +56,10 @@ setupWebAppAcid appContext @ AppConfig { currentSessionOpt = sId } =
     serveXml :: AppConfig -> String -> ServerPart Response
     serveXml AppConfig { repositoryPathOpt = p } name =
       serveFile (asContentType "application/rpki-publication") $ p ++ name
-    initialState = ST.initialStore (SessionId $ T.pack sId)
 
 
-processMessageAcid :: AcidState ST.Repo -> AppConfig -> SyncFlag -> ServerPart Response
-processMessageAcid acid appContext changeSet = do
+processMessageAcid :: AppState -> ServerPart Response
+processMessageAcid appState = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
@@ -77,7 +71,7 @@ processMessageAcid acid appContext changeSet = do
 
       respond :: RqBody -> ServerPart Response
       respond rqbody = do
-        m <- liftIO $ processMessage acid appContext clientId changeSet $ unBody rqbody
+        m <- liftIO $ processMessage appState clientId $ unBody rqbody
         respondRRDP $ snd <$> m
 
 

@@ -58,6 +58,23 @@ data RollbackException = RollbackException [Action] deriving (Typeable, Show)
 instance Exception RollbackException
 
 
+initAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
+initAppState appConf acid = do
+  chan   <- newChan
+  syncFS <- newEmptyMVar
+  m <- atomically TMap.new
+  let appState = AppState {
+    appConfig = appConf,
+    acidRepo = acid,
+    changeSetSync = chan,
+    syncFSVar = syncFS,
+    currentState = m
+  }
+  _ <- forkIO $ rrdpSyncThread appState
+  _ <- forkIO $ syncFSThread appState
+  return appState
+
+
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
 processMessage appState clientId queryXml =
   case XS.parseMessage queryXml of
@@ -297,7 +314,7 @@ serializeNotification (SessionId sId, Serial serial) _repoUrlBase snapshotHash d
   where
     sd = SnapshotDef (Version 3) (SessionId sId) (Serial serial)
     snapshotElem = [ snapshotDefElem sUri snapshotHash | sUri <- maybeToList $ snapshotUri serial ]
-    deltaElems = map (\(_, _, hash, s) -> deltaDefElem (deltaUri s) hash s) $ toList deltas
+    deltaElems   = [ deltaDefElem (deltaUri s) hash s  | (_, _, hash, s) <- toList deltas ]
 
     snapshotUri s = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/snapshot.xml"
     deltaUri s    = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
