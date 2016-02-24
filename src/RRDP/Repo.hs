@@ -4,12 +4,6 @@
 
 module RRDP.Repo where
 
-import           Control.Monad
-import           Control.Monad.Trans
-import           Control.Monad.Trans.Either
-import           Control.Exception.Base
-import           Control.Concurrent
-import           Control.Monad.IO.Class
 import           Control.Concurrent
 import qualified Control.Concurrent.AdvSTM  as AS
 import           Control.Concurrent.STM     as S
@@ -18,7 +12,6 @@ import           Control.Monad
 import           Data.Data                  (Typeable)
 import           Data.Foldable
 import           Data.Maybe
-import           Data.Either
 import           Data.Time.Clock
 import qualified ListT                      as LT
 import           Network.URI
@@ -37,8 +30,6 @@ import           Data.UUID.V4               (nextRandom)
 import           System.Directory
 import           System.FilePath
 import           System.IO.Error
-
-
 
 import           Config
 import qualified RRDP.XML                   as XS
