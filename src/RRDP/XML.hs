@@ -1,39 +1,34 @@
+{-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes        #-}
 module RRDP.XML where
 
+import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import qualified Data.ByteString.Char8 as BS
 
 import           Types
-import qualified Util as U
+import qualified Util                       as U
 
-import Network.URI
+import           Network.URI
 
-import qualified Text.Read as TR
+import qualified Text.Read                  as TR
 
-import qualified Data.Text as T
-import qualified Text.XML.Expat.Tree as XT
-import qualified Text.XML.Expat.Format as XF
+import qualified Data.Text                  as T
+import qualified Text.XML.Expat.Format      as XF
+import qualified Text.XML.Expat.Tree        as XT
 
-
-data Pdu p w = Pub p | With w | Nope
 
 extractPdus :: [XT.UNode T.Text] ->
-               ([(T.Text, T.Text)] -> T.Text -> Either ParseError p) ->
-               ([(T.Text, T.Text)] -> Either ParseError w) ->
-               Either ParseError ([p], [w])
-extractPdus pduChildren publishC withdrawC = (,) <$>
-  sequence [ pdu | Pub pdu  <- pdus ] <*>
-  sequence [ pdu | With pdu <- pdus ]
+               ([(T.Text, T.Text)] -> T.Text -> Either ParseError pdu) ->
+               ([(T.Text, T.Text)] -> Either ParseError pdu) ->
+               Either ParseError [pdu]
+extractPdus pduChildren publishC withdrawC = mapM (\e -> case e of
+        XT.Element "publish"  attrs pChildren  -> publishC attrs (getBase64 pChildren)
+        XT.Element "withdraw" attrs _          -> withdrawC attrs
+        XT.Element n _ _                       -> Left $ UnexpectedElement n
+        XT.Text t                              -> Left $ UnexpectedElement t
+      ) pduChildren
   where
-    pdus = map (\e -> case e of
-        XT.Element "publish"  attrs pChildren  -> Pub  $ publishC attrs (getBase64 pChildren)
-        XT.Element "withdraw" attrs _          -> With $ withdrawC attrs
-        _                                      -> Nope
-        ) pduChildren
-
     getBase64 pChildren = T.concat [ T.filter (`notElem` [' ', '\n', '\t']) t | XT.Text t <- pChildren ]
 
 
@@ -62,12 +57,8 @@ parsePublishWithHash pubC attrs b64 = do
   let hash  = Hash . U.text2Lbs <$> getAttr attrs "hash"
   return $ pubC uri base64 hash
 
-parsePublish :: [(T.Text, T.Text)] -> T.Text -> Either ParseError Publish
-parsePublish = parsePublishWithHash Publish
-
-parsePublishQ :: [(T.Text, T.Text)] -> T.Text -> Either ParseError QueryPdu
-parsePublishQ = parsePublishWithHash PublishQ
-
+parsePublish :: [(T.Text, T.Text)] -> T.Text -> Either ParseError QueryPdu
+parsePublish = parsePublishWithHash (\u b h -> QP $ Publish u b h)
 
 
 withdraw :: (URI -> Hash -> w) -> [(T.Text, T.Text)] -> Either ParseError w
@@ -76,11 +67,8 @@ withdraw withC attrs  = do
   hash <- U.maybeToEither NoHash $ getAttr attrs "hash"
   return $ withC uri $ Hash $ U.text2Lbs hash
 
-parseWithdrawQ :: [(T.Text, T.Text)] -> Either ParseError QueryPdu
-parseWithdrawQ = withdraw WithdrawQ
-
-parseWithdraw :: [(T.Text, T.Text)] -> Either ParseError Withdraw
-parseWithdraw  = withdraw Withdraw
+parseWithdraw :: [(T.Text, T.Text)] -> Either ParseError QueryPdu
+parseWithdraw  = withdraw (\u h -> QW $ Withdraw u h)
 
 
 parseGeneric :: LBS.ByteString ->
@@ -99,15 +87,8 @@ parseGeneric xml extract = case err of
 parseMessage :: LBS.ByteString -> Either ParseError QMessage
 parseMessage xml = parseGeneric xml $ \attrs children -> do
   version  <- parseVersion attrs "3"
-  (ps, ws) <- extractPdus children parsePublishQ parseWithdrawQ
-  return $ Message version $ ps ++ ws
-
-
-parseSnapshot :: LBS.ByteString -> Either ParseError Snapshot
-parseSnapshot xml = parseGeneric xml $ \attrs children -> do
-  (sessionId, version, serial) <- extractCommonAttrs attrs
-  (pdus, _)                    <- extractPdus children parsePublish parseWithdraw
-  return $ Snapshot (SnapshotDef version sessionId serial) pdus
+  pdus <- extractPdus children parsePublish parseWithdraw
+  return $ Message version pdus
 
 
 extractCommonAttrs :: [(T.Text, T.Text)] -> Either ParseError (SessionId, Version, Serial)
@@ -138,20 +119,19 @@ withdrawElem uri (Hash hash) = mkElem "withdraw" [("uri", U.pack $ show uri), (
 snapshotElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s
 snapshotElem (SnapshotDef version sId serial) = commonElem version sId serial "snapshot"
 
-deltaElem :: U.BString s => DeltaDef -> [Elem s] -> [Elem s] -> Elem s
-deltaElem (DeltaDef version sId serial _) publishElements withdrawElements =
-  commonElem version sId serial "delta" (publishElements ++ withdrawElements)
+deltaElem :: U.BString s => DeltaDef -> [Elem s] -> Elem s
+deltaElem (DeltaDef version sId serial) = commonElem version sId serial "delta"
 
 notificationElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s
-notificationElem (SnapshotDef version sId serial) elements = commonElem version sId serial "notification" elements
+notificationElem (SnapshotDef version sId serial) = commonElem version sId serial "notification"
 
 commonElem :: U.BString s => Version -> SessionId -> Serial -> String -> [XT.Node String s] -> XT.Node String s
-commonElem (Version version) (SessionId uuid) (Serial serial) elemName children = mkElem elemName [
+commonElem (Version version) (SessionId uuid) (Serial serial) elemName = mkElem elemName [
     ("xmlns", U.pack "http://www.ripe.net/rpki/rrdp"),
     ("version", U.pack $ show version),
     ("serial",  U.pack $ show serial),
     ("session_id", U.text uuid)
-  ] children
+  ]
 
 
 createReply :: RMessage -> LBS.ByteString

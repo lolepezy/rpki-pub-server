@@ -8,14 +8,12 @@ defaultHost = "localhost"
 defaultPort :: Int
 defaultPort = 9999
 
-defaultSnapshotSyncPeriod :: Int
-defaultSnapshotSyncPeriod = 9999
-
+defaultFSSyncPeriod :: Int
+defaultFSSyncPeriod = 10
 
 data AppConfig = AppConfig {
   repositoryPathOpt    :: String,
   repositoryBaseUrlOpt :: String,
-  currentSessionOpt    :: String,
   snapshotSyncPeriod   :: Int
 }
 
@@ -25,5 +23,4 @@ instance Options AppConfig where
       <*> simpleOption "repo-uri"
                        ("http://" ++ defaultHost ++ ":" ++ show defaultPort)
                        "URI to the repository root. Is used for generating URI for the notification files."
-      <*> simpleOption "session" "" "Actual session id"
-      <*> simpleOption "snapshot-sync-period" defaultSnapshotSyncPeriod "Minimal period of time in seconds to synchronize snapshots to FS"
+      <*> simpleOption "snapshot-sync-period" defaultFSSyncPeriod "Minimal period of time in seconds to synchronize snapshots to FS"

@@ -2,7 +2,6 @@
 {-# LANGUAGE TemplateHaskell    #-}
 module Types where
 
-import Control.Concurrent.MVar
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Data.Data                  (Data, Typeable)
 import           Data.SafeCopy              (base, deriveSafeCopy)
@@ -16,12 +15,12 @@ newtype Version = Version Int deriving (Show, Eq, Ord, Typeable, Data)
 newtype Hash = Hash L.ByteString deriving (Show, Eq, Ord, Typeable, Data)
 newtype ClientId = ClientId String deriving (Show, Eq, Ord, Typeable, Data)
 
-data Base64 = Base64 !L.ByteString Hash deriving (Show, Eq, Ord, Typeable, Data)
+data Base64 = Base64 !L.ByteString !Hash deriving (Show, Eq, Ord, Typeable, Data)
 
 data SnapshotDef = SnapshotDef !Version !SessionId !Serial
   deriving (Show, Eq)
 
-data DeltaDef = DeltaDef !Version !SessionId !Serial !ClientId
+data DeltaDef = DeltaDef !Version !SessionId !Serial
   deriving (Show, Eq, Ord, Typeable, Data)
 
 data Notification = Notification !Version !Serial !SnapshotDef [DeltaDef]
@@ -30,8 +29,15 @@ data Notification = Notification !Version !Serial !SnapshotDef [DeltaDef]
 data Snapshot = Snapshot !SnapshotDef [Publish]
   deriving (Show, Eq)
 
-data Delta = Delta !DeltaDef [Publish] [Withdraw]
+data Delta = Delta !DeltaDef [QueryPdu]
   deriving (Show, Eq, Ord, Typeable, Data)
+
+-- publish/withdraw messages
+data Message pdu = Message !Version [pdu]
+  deriving (Show, Eq)
+
+type QMessage = Message QueryPdu
+type RMessage = Message ReplyPdu
 
 data Publish = Publish !URI !Base64 !(Maybe Hash)
   deriving (Show, Eq, Ord, Typeable, Data)
@@ -39,15 +45,7 @@ data Publish = Publish !URI !Base64 !(Maybe Hash)
 data Withdraw = Withdraw !URI !Hash
   deriving (Show, Eq, Ord, Typeable, Data)
 
--- publish/withdraw messages
-data Message pdu = Message Version [pdu]
-  deriving (Show, Eq)
-
-type QMessage = Message QueryPdu
-type RMessage = Message ReplyPdu
-
-data QueryPdu = PublishQ !URI !Base64 !(Maybe Hash)
-  | WithdrawQ !URI !Hash
+data QueryPdu = QP Publish | QW Withdraw
   deriving (Show, Eq, Ord, Typeable, Data)
 
 data ReplyPdu = PublishR !URI
@@ -55,56 +53,54 @@ data ReplyPdu = PublishR !URI
   | ReportError !RepoError
   deriving (Show, Eq)
 
-data ParseError = BadXml T.Text
+data ParseError = BadXml !T.Text
               | NoVersion
               | NoMessageType
-              | BadMessageType T.Text
-              | UnexpectedElement T.Text
+              | BadMessageType !T.Text
+              | UnexpectedElement !T.Text
               | NoURI
               | NoSessionId
               | NoSerial
               | NoHash
               | HashInSnapshotIsNotAllowed
-              | BadURI T.Text
-              | BadBase64 T.Text
-              | BadVersion T.Text
-              | BadSerial T.Text
-              | BadXmlNs T.Text
+              | BadURI !T.Text
+              | BadBase64 !T.Text
+              | BadVersion !T.Text
+              | BadSerial !T.Text
+              | BadXmlNs !T.Text
   deriving (Eq, Show, Typeable, Data)
 
-data RRDPError = NoSnapshot SessionId
-              | NoDelta SessionId Serial
-              | BadMessage ParseError
-              | SnapshotSyncError IOError
-              | DeltaSyncError IOError
-              | NotificationSyncError IOError
-              | InconsistentSerial Int
+data RRDPError = NoSnapshot !SessionId
+              | NoDelta !SessionId !Serial
+              | BadMessage !ParseError
+              | SnapshotSyncError !IOError
+              | DeltaSyncError !IOError
+              | NotificationSyncError !IOError
+              | InconsistentSerial !Int
   deriving (Eq, Show)
 
-data RepoError = CannotFindSnapshot SessionId
-              | CannotFindDelta SessionId
+data RepoError = CannotFindSnapshot !SessionId
+              | CannotFindDelta !SessionId
               | NonMatchingSessionId
-              | NonFoundRepoDirectory String
-              | CouldNotReadRepoDirectory String
-              | NotFoundSessionWithId SessionId
-              | BadRRDPVersion Version
+              | NonFoundRepoDirectory !String
+              | CouldNotReadRepoDirectory !String
+              | NotFoundSessionWithId !SessionId
+              | BadRRDPVersion !Version
               | NonContinuousDeltas [Int]
-              | BadSnapshot SessionId ParseError
-              | BadDelta SessionId Int ParseError
-              | ObjectNotFound URI
-              | CannotInsertExistingObject URI
-              | CannotChangeOtherClientObject { oUri :: URI, storedClientId :: ClientId, queryClientId :: ClientId }
-              | BadHash { passed :: Hash, stored ::Hash, uriW :: URI }
+              | BadSnapshot !SessionId !ParseError
+              | BadDelta !SessionId !Int !ParseError
+              | ObjectNotFound !URI
+              | CannotInsertExistingObject !URI
+              | CannotChangeOtherClientObject { oUri :: !URI, storedClientId :: !ClientId, queryClientId :: !ClientId }
+              | BadHash { passed :: !Hash, stored :: !Hash, uriW :: !URI }
               | RepoESeq [RepoError]
   deriving (Eq, Show, Typeable, Data)
 
 -- private utility type to make logic easier to understand
-data ObjOperation a u d w = Add_ a | Update_ u | Delete_ d | Wrong_ w
+data ObjOperation a u d w = AddOrUpdate_ u | Delete_ d | Wrong_ w
   deriving (Eq, Show, Typeable, Data)
 
 type Action = ObjOperation (URI, Base64) (URI, Base64) URI RepoError
-
-type SyncFlag = MVar Bool
 
 $(deriveSafeCopy 0 'base ''Hash)
 $(deriveSafeCopy 0 'base ''Serial)

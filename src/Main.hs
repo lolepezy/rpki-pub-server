@@ -38,11 +38,11 @@ setupWebAppAcid :: AppConfig -> IO ()
 setupWebAppAcid appContext @ AppConfig { currentSessionOpt = sId } =
   bracket (openLocalState initialState) createCheckpointAndClose
   (\acid -> do
-      syncFlag <- newEmptyMVar
-      forkIO $ syncThread acid appContext syncFlag
+      changeSet <- newEmptyMVar
+      forkIO $ rrdpSyncThread acid appContext changeSet
       simpleHTTP nullConf { port = defaultPort } $ msum
         [ dir "message" $ method POST >>
-             rpkiContentType (processMessageAcid acid appContext syncFlag),
+             rpkiContentType (processMessageAcid acid appContext changeSet),
 
           dir "notification.xml" $ method GET >>
             serveXml appContext "notification.xml",
@@ -65,7 +65,7 @@ setupWebAppAcid appContext @ AppConfig { currentSessionOpt = sId } =
 
 
 processMessageAcid :: AcidState ST.Repo -> AppConfig -> SyncFlag -> ServerPart Response
-processMessageAcid acid appContext syncFlag = do
+processMessageAcid acid appContext changeSet = do
     req  <- askRq
     body <- liftIO $ takeRequestBody req
     case body of
@@ -77,7 +77,7 @@ processMessageAcid acid appContext syncFlag = do
 
       respond :: RqBody -> ServerPart Response
       respond rqbody = do
-        m <- liftIO $ processMessage acid appContext clientId syncFlag $ unBody rqbody
+        m <- liftIO $ processMessage acid appContext clientId changeSet $ unBody rqbody
         respondRRDP $ snd <$> m
 
 

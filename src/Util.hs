@@ -4,11 +4,17 @@ import qualified Data.ByteString.Char8  as S
 import qualified Data.ByteString.Lazy.Char8  as L
 import qualified Data.ByteString.Base64.Lazy as B64
 import qualified Data.ByteString.Base16 as B16
+import           Data.Hashable
+import Data.UUID
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Network.URI (URI)
 
 import Types
+
+nextS :: Serial -> Serial
+nextS (Serial s) = Serial $ s + 1
 
 maybeToEither :: e -> Maybe a -> Either e a
 maybeToEither e Nothing  = Left e
@@ -45,20 +51,29 @@ text2Lbs = L.fromStrict . TE.encodeUtf8
 base64bs :: Base64 -> S.ByteString
 base64bs (Base64 b64 _) = strict . B64.encode $ b64
 
+uuid2SessionId :: UUID -> SessionId
+uuid2SessionId uuid = SessionId $ T.pack $ show uuid
+
 class BString s where
   lazy :: s -> L.ByteString
   strict :: s -> S.ByteString
   pack :: String -> s
   text :: T.Text -> s
+  length :: s -> Integer
 
 instance BString L.ByteString where
   lazy = id
   strict = S.concat . L.toChunks
   pack = L.pack
   text = L.fromStrict . TE.encodeUtf8
+  length = toInteger . L.length
 
 instance BString S.ByteString where
   lazy = L.fromStrict
   strict = id
   pack = S.pack
   text = TE.encodeUtf8
+  length = toInteger . S.length
+
+instance Hashable URI where
+  hashWithSalt salt u = hashWithSalt salt (S.pack $ show u :: S.ByteString)
