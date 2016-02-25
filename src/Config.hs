@@ -14,7 +14,8 @@ defaultFSSyncPeriod = 10
 data AppConfig = AppConfig {
   repositoryPathOpt    :: String,
   repositoryBaseUrlOpt :: String,
-  snapshotSyncPeriod   :: Int
+  snapshotSyncPeriod   :: Int,
+  appPort              :: Int
 }
 
 instance Options AppConfig where
@@ -24,3 +25,4 @@ instance Options AppConfig where
                        ("http://" ++ defaultHost ++ ":" ++ show defaultPort)
                        "URI to the repository root. Is used for generating URI for the notification files."
       <*> simpleOption "snapshot-sync-period" defaultFSSyncPeriod "Minimal period of time in seconds to synchronize snapshots to FS"
+      <*> simpleOption "port" defaultPort "Port to bind"

@@ -31,11 +31,11 @@ main = runCommand $ \opts _ -> setupWebAppAcid opts
 
 
 setupWebAppAcid :: AppConfig -> IO ()
-setupWebAppAcid appConf =
+setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
       appState <- initAppState appConf acid
-      simpleHTTP nullConf { port = defaultPort } $ msum
+      simpleHTTP nullConf { port = pPort } $ msum
         [ dir "message" $ method POST >>
              rpkiContentType (processMessageAcid appState),
 

@@ -190,8 +190,9 @@ tActionSeq clientId pdus tReposState = go pdus
 
 rrdpSyncThread :: AppState -> IO ()
 rrdpSyncThread AppState {
+    appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod },
     changeSetSync = sync,
-    syncFSVar = syncFS } = do
+    syncFSVar     = syncFS } = do
       t0 <- getCurrentTime
       waitAndProcess t0
     where
@@ -228,7 +229,7 @@ rrdpSyncThread AppState {
         else
           (x :) <$> getCurrentChanContent ch
 
-      syncMinPeriod = 10 :: NominalDiffTime
+      syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
 
 timestamp :: String -> IO ()
 timestamp s = do
