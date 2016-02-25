@@ -23,7 +23,7 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Text                  as T
 
 import           Data.Acid
-import           Data.Acid.Advanced         (update')
+import           Data.Acid.Advanced         (update', query')
 
 import           Data.UUID.V4               (nextRandom)
 
@@ -62,7 +62,8 @@ initAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
 initAppState appConf acid = do
   chan   <- newChan
   syncFS <- newEmptyMVar
-  m <- atomically TMap.new
+  ros    <- query' acid ST.GetAllObjects
+  m      <- atomically $ stmMapFromList ros
   let appState = AppState {
     appConfig = appConf,
     acidRepo = acid,
@@ -72,7 +73,14 @@ initAppState appConf acid = do
   }
   _ <- forkIO $ rrdpSyncThread appState
   _ <- forkIO $ syncFSThread appState
+
   return appState
+  where
+    stmMapFromList list = do
+      m <- TMap.new
+      _ <- sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
+      return m
+
 
 
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
@@ -282,7 +290,7 @@ syncFSThread appState @ AppState { syncFSVar = syncFS } = do
 
 
 syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())
-syncToFS (sessionId @ (SessionId sId), serial)
+syncToFS (sessionId @ (SessionId sId), Serial s)
   AppState {
     appConfig = AppConfig {
       repositoryPathOpt = repoDir,
@@ -293,8 +301,8 @@ syncToFS (sessionId @ (SessionId sId), serial)
       _ <- writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
       writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
   where
-    storeDir = repoDir </> T.unpack sId </> show serial
-    notification = serializeNotification (sessionId, serial) repoUrl snapshotHash deltas
+    storeDir = repoDir </> T.unpack sId </> show s
+    notification = serializeNotification (sessionId, Serial s) repoUrl snapshotHash deltas
 
     writeLastSnapshot = write_ $ L.writeFile (storeDir </> "snapshot.xml") snapshotXml
     writeDelta        = write_ $ L.writeFile (storeDir </> "delta.xml") deltaXml
@@ -336,10 +344,3 @@ serializeDelta (Delta deltaDef pdus) = U.lazy $ XS.format $ XS.deltaElem deltaDe
                     QP (Publish u b64 mHash) -> XS.publishElem u b64 mHash
                     QW (Withdraw u hash)     -> XS.withdrawElem u hash
                 | pdu <- pdus ]
-
-
-stmMapFromList :: TMap.Key k => [(k,v)] -> STM (TMap.Map k v)
-stmMapFromList list = do
-  m <- TMap.new
-  _ <- sequence_ [ TMap.insert object url m | (url, object) <- list ]
-  return m

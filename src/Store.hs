@@ -20,11 +20,8 @@ import           Data.SafeCopy             (base, deriveSafeCopy)
 import           Network.URI
 import           Types
 
-data RepoObject = RepoObject {
-  clientId :: ClientId,
-  uri      :: URI,
-  base64   :: Base64
-} deriving (Show, Eq, Ord, Typeable, Data)
+data RepoObject = RepoObject ClientId URI Base64
+  deriving (Show, Eq, Ord, Typeable, Data)
 
 $(deriveSafeCopy 0 'base ''RepoObject)
 
@@ -66,21 +63,20 @@ getAllObjects = do
 getRepo :: Query Repo [(URI, RepoObject)]
 getRepo = do
   Repo objs <- ask
-  return [ (u, o) | o @ RepoObject  { uri = u } <- toList objs ]
+  return [ (u, o) | o @ (RepoObject _ u _) <- toList objs ]
 
 
 applyActions :: ClientId -> [Action] -> Update Repo Repo
 applyActions cId actions = do
   oldR @ (Repo objects) <- get
   let toDelete = fromList [ uri | Delete_ uri <- actions ]
-  let updates = [ RepoObject { uri = u, base64 = base64, clientId = cId } | AddOrUpdate_ (u, base64) <- actions, keep u toDelete ]
-  let newR = foldl (\accum r -> IX.updateIx (uri r) r accum) objects updates
-  let repo = oldR {  objects = newR }
+  let updates = [ RepoObject cId u base64 | AddOrUpdate_ (u, base64) <- actions, keep u toDelete ]
+  let newR = foldl (\accum r@(RepoObject _ u _) -> IX.updateIx u r accum) objects updates
+  let repo = oldR { objects = newR }
   put repo
   return repo
   where
     keep u toDelete = not $ u `member` toDelete
-
 
 initialStore :: Repo
 initialStore = Repo IX.empty
