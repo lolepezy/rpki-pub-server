@@ -228,11 +228,12 @@ rrdpSyncThread AppState {
         else
           (x :) <$> getCurrentChanContent ch
 
-      timestamp s = do
-        t <- getCurrentTime
-        print $ s ++ show t
-
       syncMinPeriod = 10 :: NominalDiffTime
+
+timestamp :: String -> IO ()
+timestamp s = do
+  t <- getCurrentTime
+  print $ s ++ show t
 
 
 {-
@@ -252,7 +253,9 @@ syncFSThread appState @ AppState { syncFSVar = syncFS } = do
   go (U.uuid2SessionId uuid) (Serial 1) $ SyncFSData DQ.empty 0
   where
     go sessionId serial syncData = do
-      (lastState, pdus) <- readMVar syncFS
+      timestamp "syncFSThread 1: "
+      (lastState, pdus) <- takeMVar syncFS
+      timestamp "syncFSThread 2: "
 
       let snapshotXml = serializeSnapshot lastState $ SnapshotDef (Version 3) sessionId serial
           (snapshotSize, snapshotHash) = (U.length snapshotXml, U.getHash snapshotXml)
@@ -324,7 +327,7 @@ serializeNotification (SessionId sId, Serial serial) _repoUrlBase snapshotHash d
   where
     sd = SnapshotDef (Version 3) (SessionId sId) (Serial serial)
     snapshotElem = [ snapshotDefElem sUri snapshotHash | sUri <- maybeToList $ snapshotUri serial ]
-    deltaElems   = [ deltaDefElem (deltaUri s) hash s  | (_, _, hash, s) <- toList deltas ]
+    deltaElems   = [ deltaDefElem (deltaUri s) hash s  | (_, _, hash, Serial s) <- toList deltas ]
 
     snapshotUri s = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/snapshot.xml"
     deltaUri s    = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
