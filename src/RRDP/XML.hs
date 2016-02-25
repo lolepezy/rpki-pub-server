@@ -13,6 +13,7 @@ import           Network.URI
 
 import qualified Text.Read                  as TR
 
+import           Data.Maybe                 (mapMaybe)
 import qualified Data.Text                  as T
 import qualified Text.XML.Expat.Format      as XF
 import qualified Text.XML.Expat.Tree        as XT
@@ -22,11 +23,11 @@ extractPdus :: [XT.UNode T.Text] ->
                ([(T.Text, T.Text)] -> T.Text -> Either ParseError pdu) ->
                ([(T.Text, T.Text)] -> Either ParseError pdu) ->
                Either ParseError [pdu]
-extractPdus pduChildren publishC withdrawC = mapM (\e -> case e of
-        XT.Element "publish"  attrs pChildren  -> publishC attrs (getBase64 pChildren)
-        XT.Element "withdraw" attrs _          -> withdrawC attrs
-        XT.Element n _ _                       -> Left $ UnexpectedElement n
-        XT.Text t                              -> Left $ UnexpectedElement t
+extractPdus pduChildren publishC withdrawC = sequence $ mapMaybe (\e -> case e of
+        XT.Element "publish"  attrs pChildren  -> Just $ publishC attrs (getBase64 pChildren)
+        XT.Element "withdraw" attrs _          -> Just $ withdrawC attrs
+        XT.Element n _ _                       -> Just $ Left $ UnexpectedElement n
+        _                                      -> Nothing
       ) pduChildren
   where
     getBase64 pChildren = T.concat [ T.filter (`notElem` [' ', '\n', '\t']) t | XT.Text t <- pChildren ]

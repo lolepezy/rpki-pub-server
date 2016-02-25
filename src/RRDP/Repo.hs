@@ -221,11 +221,11 @@ rrdpSyncThread AppState {
         waitAndProcess newTime
 
       getCurrentChanContent ch = do
+        x     <- readChan ch
         empty <- isEmptyChan ch
         if empty then
-          return []
-        else do
-          x <- readChan ch
+          return [x]
+        else
           (x :) <$> getCurrentChanContent ch
 
       timestamp s = do
@@ -296,6 +296,8 @@ syncToFS (sessionId @ (SessionId sId), Serial s)
       repositoryPathOpt = repoDir,
       repositoryBaseUrlOpt = repoUrl
     }} (snapshotXml, snapshotHash) (deltaXml, _) deltas = do
+      createDirectoryIfMissing False repoDir
+      createDirectoryIfMissing False $ repoDir </> T.unpack sId
       createDirectoryIfMissing False storeDir
       _ <- writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
       _ <- writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
