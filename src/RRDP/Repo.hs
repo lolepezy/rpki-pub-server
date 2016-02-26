@@ -48,7 +48,7 @@ type TRepoState = TMap.Map URI (Base64, ClientId)
 data AppState = AppState {
   currentState  :: TRepoState,
   acidRepo      :: AcidState ST.Repo,
-  changeSetSync :: Chan (RepoState, [QueryPdu]),
+  changeSetSync :: TChan (RepoState, [QueryPdu]),
   syncFSVar     :: MVar (RepoState, [QueryPdu]),
   appConfig     :: AppConfig
 }
@@ -60,10 +60,9 @@ instance Exception RollbackException
 
 initAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
 initAppState appConf acid = do
-  chan   <- newChan
-  syncFS <- newEmptyMVar
-  ros    <- query' acid ST.GetAllObjects
-  m      <- atomically $ stmMapFromList ros
+  syncFS    <- newEmptyMVar
+  ros       <- query' acid ST.GetAllObjects
+  (m, chan) <- atomically $ (,) <$> stmMapFromList ros <*> newTChan
   let appState = AppState {
     appConfig = appConf,
     acidRepo = acid,
@@ -112,11 +111,10 @@ applyActionsToState appState @ AppState {
         -- in case errors are present, rollback the transaction
         -- and return the actions
         (_:_) -> AS.liftAdv $ throwSTM $ RollbackException actions
-        []    -> AS.onCommit $ do
-          -- TODO Handle errors here somehow
-          void $ update' repo (ST.ApplyActions clientId actions)
+        []    -> do
           -- notify the snapshot writing thread
-          notifySnapshotWritingThread (immutableState, pdus)
+          AS.liftAdv $ notifySnapshotWritingThread (immutableState, pdus)
+          AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
 
       return actions
 
@@ -128,8 +126,8 @@ applyActionsToState appState @ AppState {
         publishR     = [ PublishR    uri | QP (Publish uri _ _) <- pdus ]
         withdrawR    = [ WithdrawR   uri | QW (Withdraw uri _)  <- pdus ]
 
-    notifySnapshotWritingThread :: (RepoState, [QueryPdu]) -> IO ()
-    notifySnapshotWritingThread = writeChan changeQueue
+    notifySnapshotWritingThread :: (RepoState, [QueryPdu]) -> STM ()
+    notifySnapshotWritingThread = writeTChan changeQueue
 
 
 stateSnapshot :: TRepoState -> STM RepoState
@@ -201,7 +199,7 @@ rrdpSyncThread AppState {
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
         timestamp " time 0 = "
-        changes <- getCurrentChanContent sync
+        changes <- atomically $ getCurrentChanContent sync
         timestamp " time 1 = "
         t1      <- getCurrentTime
         let pdus = concatMap snd changes
@@ -224,8 +222,8 @@ rrdpSyncThread AppState {
         waitAndProcess newTime
 
       getCurrentChanContent ch = do
-        x     <- readChan ch
-        empty <- isEmptyChan ch
+        x     <- readTChan ch
+        empty <- isEmptyTChan ch
         if empty then
           return [x]
         else
@@ -257,7 +255,10 @@ data SyncFSData = SyncFSData {
   TODO Implement redundant delta removals
 -}
 syncFSThread :: AppState -> IO ()
-syncFSThread appState @ AppState { syncFSVar = syncFS } = do
+syncFSThread appState @ AppState {
+  syncFSVar = syncFS,
+  appConfig = AppConfig { repositoryPathOpt = repoDir }
+  } = do
   uuid <- nextRandom
   go (U.uuid2SessionId uuid) (Serial 1) $ SyncFSData DQ.empty 0
   where
@@ -288,15 +289,14 @@ syncFSThread appState @ AppState { syncFSVar = syncFS } = do
 
       fs <- syncToFS (sessionId, serial) appState (snapshotXml, snapshotHash) (deltaXml, deltaHash) deltas
 
-      mapM_ (forkIO . scheduleDeltaRemoval) deltaSerialsToDelete
+      mapM_ (forkIO . scheduleDeltaRemoval sessionId) deltaSerialsToDelete
 
       go sessionId (U.nextS serial) newSyncData
-      where
-        scheduleDeltaRemoval (Serial s) = void $ do
-          -- sleep for an hour before removing
-          threadDelay $ 3600*1000*1000
-          -- TODO delete the delta with this serial
-          return ()
+
+    scheduleDeltaRemoval (SessionId sId) (Serial s) = void $ do
+      threadDelay $ 3600*1000*1000
+      removeFile $ repoDir </> show sId </> show s </> "delta.xml"
+      return ()
 
 
 
