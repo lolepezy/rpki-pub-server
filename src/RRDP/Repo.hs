@@ -82,7 +82,9 @@ initAppState appConf acid = do
       return m
 
 
-
+{-
+  TODO Implement <list> requests
+-}
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
 processMessage appState clientId queryXml =
   case XS.parseMessage queryXml of
@@ -231,6 +233,7 @@ rrdpSyncThread AppState {
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
 
+-- temporary poorman logging until the proper one is used
 timestamp :: String -> IO ()
 timestamp s = do
   t <- getCurrentTime
@@ -248,6 +251,11 @@ data SyncFSData = SyncFSData {
   totalDeltaSize :: Integer
 }
 
+{-
+  TODO Schedule clean up of the repository at some time after launch
+  TODO Schedule clean up of old snapshots
+  TODO Implement redundant delta removals
+-}
 syncFSThread :: AppState -> IO ()
 syncFSThread appState @ AppState { syncFSVar = syncFS } = do
   uuid <- nextRandom
@@ -287,7 +295,7 @@ syncFSThread appState @ AppState { syncFSVar = syncFS } = do
         scheduleDeltaRemoval (Serial s) = void $ do
           -- sleep for an hour before removing
           threadDelay $ 3600*1000*1000
-          -- delete the delta with this serial
+          -- TODO delete the delta with this serial
           return ()
 
 
