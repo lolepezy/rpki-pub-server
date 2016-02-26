@@ -328,7 +328,7 @@ serializeNotification (SessionId sId, Serial serial) _repoUrlBase snapshotHash d
   where
     sd = SnapshotDef (Version 3) (SessionId sId) (Serial serial)
     snapshotElem = [ snapshotDefElem sUri snapshotHash | sUri <- maybeToList $ snapshotUri serial ]
-    deltaElems   = [ deltaDefElem (deltaUri s) hash s  | (_, _, hash, Serial s) <- toList deltas ]
+    deltaElems   = [ deltaDefElem u hash s | (_, _, hash, Serial s) <- toList deltas, u <- toList $ deltaUri s ]
 
     snapshotUri s = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/snapshot.xml"
     deltaUri s    = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
