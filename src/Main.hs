@@ -7,7 +7,7 @@ import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Happstack.Server           (ServerPart, ToMessage,
-                                             asContentType, askRq, badRequest,
+                                             asContentType, askRq, badRequest, look,
                                              dir, method, notFound, ok, path,
                                              serveFile, setHeaderM, simpleHTTP,
                                              toResponse)
@@ -35,8 +35,8 @@ setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
       appState <- initAppState appConf acid
-      simpleHTTP nullConf { port = pPort } $ msum
-        [ dir "message" $ method POST >>
+      simpleHTTP nullConf { port = pPort } $ msum [
+          dir "message" $ method POST >>
              rpkiContentType (processMessageAcid appState),
 
           dir "notification.xml" $ method GET >>
@@ -61,22 +61,20 @@ setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
 processMessageAcid :: AppState -> ServerPart Response
 processMessageAcid appState = do
     req  <- askRq
-    body <- liftIO $ takeRequestBody req
-    case body of
-      Just rqbody -> respond rqbody
+    cId  <- look "clientId"
+    b <- liftIO $ takeRequestBody req
+    case b of
+      Just rqbody -> respond (ClientId cId) rqbody
       Nothing     -> mkResp badRequest $ L.pack "Request has no body"
     where
-      -- TODO Read in from the request as well
-      clientId = ClientId "defaultClientId"
-
-      respond :: RqBody -> ServerPart Response
-      respond rqbody = do
+      respond :: ClientId -> RqBody -> ServerPart Response
+      respond clientId rqbody = do
         m <- liftIO $ processMessage appState clientId $ unBody rqbody
         respondRRDP $ snd <$> m
 
 
 rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
-rpkiContentType response = setHeaderM "Content-Type" "application/rpki-publication" >> response
+rpkiContentType response = setHeaderM "Content-Type" "text/xml" >> response
 
 -- TODO Set the proper content type for XML files we serve
 rrdpContentType response = setHeaderM "Content-Type" "text/xml" >> response
