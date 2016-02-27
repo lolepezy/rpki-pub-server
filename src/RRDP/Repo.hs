@@ -118,9 +118,9 @@ applyActionsToState appState @ AppState {
 
     message actions = Message (Version 1) (errors ++ publishR ++ withdrawR)
       where
-        errors       = [ ReportError err | Wrong_ err       <- actions ]
-        publishR     = [ PublishR    uri | QP (Publish uri _ _) <- pdus ]
-        withdrawR    = [ WithdrawR   uri | QW (Withdraw uri _)  <- pdus ]
+        errors       = [ ReportError err | Wrong_ err            <- actions ]
+        publishR     = [ PublishR    uri | AddOrUpdate_ (uri, _) <- actions ]
+        withdrawR    = [ WithdrawR   uri | Delete_ uri           <- actions ]
 
     notifySnapshotWritingThread :: [QueryPdu] -> STM ()
     notifySnapshotWritingThread = writeTChan changeQueue
