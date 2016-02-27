@@ -116,11 +116,12 @@ applyActionsToState appState @ AppState {
 
     rollbackActions (RollbackException as) = return as
 
-    message actions = Message (Version 1) (errors ++ publishR ++ withdrawR)
-      where
-        errors       = [ ReportError err | Wrong_ err            <- actions ]
-        publishR     = [ PublishR    uri | AddOrUpdate_ (uri, _) <- actions ]
-        withdrawR    = [ WithdrawR   uri | Delete_ uri           <- actions ]
+    message actions = Message (Version 1) responsePdus
+      where responsePdus = [ case a of
+                               AddOrUpdate_ (uri, _) -> PublishR uri
+                               Delete_ uri           -> WithdrawR uri
+                               Wrong_ err            -> ReportError err
+                            | a <- actions ]
 
     notifySnapshotWritingThread :: [QueryPdu] -> STM ()
     notifySnapshotWritingThread = writeTChan changeQueue
