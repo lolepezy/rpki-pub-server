@@ -48,7 +48,7 @@ type TRepoState = TMap.Map URI (Base64, ClientId)
 data AppState = AppState {
   currentState  :: TRepoState,
   acidRepo      :: AcidState ST.Repo,
-  changeSetSync :: TChan (RepoState, [QueryPdu]),
+  changeSetSync :: TChan [QueryPdu],
   syncFSVar     :: MVar (RepoState, [QueryPdu]),
   appConfig     :: AppConfig
 }
@@ -102,10 +102,6 @@ applyActionsToState appState @ AppState {
   where
     applyToState = AS.atomically $ do
       actions <- AS.liftAdv $ tActionSeq clientId pdus currentImMemoryState
-      {- TODO That can have terrible performance as it reads the whole map
-         and calls readTVar a lot of times.
-      -}
-      immutableState <- AS.liftAdv $ stateSnapshot currentImMemoryState
       let errors = [ ReportError err | Wrong_ err <- actions ]
       case errors of
         -- in case errors are present, rollback the transaction
@@ -113,7 +109,7 @@ applyActionsToState appState @ AppState {
         (_:_) -> AS.liftAdv $ throwSTM $ RollbackException actions
         []    -> do
           -- notify the snapshot writing thread
-          AS.liftAdv $ notifySnapshotWritingThread (immutableState, pdus)
+          AS.liftAdv $ notifySnapshotWritingThread pdus
           AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
 
       return actions
@@ -126,7 +122,7 @@ applyActionsToState appState @ AppState {
         publishR     = [ PublishR    uri | QP (Publish uri _ _) <- pdus ]
         withdrawR    = [ WithdrawR   uri | QW (Withdraw uri _)  <- pdus ]
 
-    notifySnapshotWritingThread :: (RepoState, [QueryPdu]) -> STM ()
+    notifySnapshotWritingThread :: [QueryPdu] -> STM ()
     notifySnapshotWritingThread = writeTChan changeQueue
 
 
@@ -190,6 +186,7 @@ tActionSeq clientId pdus tReposState = go pdus
 
 rrdpSyncThread :: AppState -> IO ()
 rrdpSyncThread AppState {
+    currentState  = currentImMemoryState,
     appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod },
     changeSetSync = sync,
     syncFSVar     = syncFS } = do
@@ -199,11 +196,10 @@ rrdpSyncThread AppState {
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
         timestamp " time 0 = "
-        changes <- atomically $ getCurrentChanContent sync
+        (changes, lastState) <- atomically $ (,) <$> getCurrentChanContent sync <*> stateSnapshot currentImMemoryState
         timestamp " time 1 = "
         t1      <- getCurrentTime
-        let pdus = concatMap snd changes
-        let lastState = last $ map fst changes
+        let pdus = concat changes
         if longEnough t0 t1 then do
           timestamp " time 2 = "
           doSyncWaitAgain lastState pdus t1
