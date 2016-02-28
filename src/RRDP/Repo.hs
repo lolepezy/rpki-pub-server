@@ -119,10 +119,10 @@ applyActionsToState appState @ AppState {
 
     message actions = Message (Version 1) responsePdus
       where responsePdus = [ case a of
-                               AddOrUpdate_ (uri, _) -> PublishR uri
-                               Delete_ uri           -> WithdrawR uri
-                               Wrong_ err            -> ReportError err
-                            | a <- actions ]
+                 AddOrUpdate_ (uri, _) -> PublishR uri
+                 Delete_ uri           -> WithdrawR uri
+                 Wrong_ err            -> ReportError err
+              | a <- actions ]
 
     notifySnapshotWritingThread :: [QueryPdu] -> STM ()
     notifySnapshotWritingThread = writeTChan changeQueue
@@ -248,7 +248,6 @@ data SyncFSData = SyncFSData {
 }
 
 {-
-  TODO Schedule clean up of the repository at some time after launch
   TODO Schedule clean up of old snapshots
   TODO Implement redundant delta removals
 -}
@@ -306,6 +305,20 @@ syncFSThread appState @ AppState {
       let otherSessions = catMaybes [ fromString d | d <- dirs, d `notElem` filterOut]
       let sessionsToDelete = map (\d -> repoDir </> toString d) otherSessions
       mapM_ removeDirectory sessionsToDelete
+
+
+    -- TODO Remove all but the last one
+    scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ do
+      -- TODO Make it configurable
+      threadDelay $ 3600*1000*1000
+      let sessionDir = repoDir </> T.unpack sId
+      dirsOfInterest <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
+      mapM_ (\d -> do
+              let snapshotFile = sessionDir </> d </> "snapshot.xml"
+              -- TODO Remove only if it's been accessed long ago
+              removeFile snapshotFile
+              return ()
+            ) dirsOfInterest
 
 
 syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())
