@@ -25,6 +25,7 @@ import qualified Data.Text                  as T
 import           Data.Acid
 import           Data.Acid.Advanced         (update', query')
 
+import           Data.UUID               (fromString, toString)
 import           Data.UUID.V4               (nextRandom)
 
 import           System.Directory
@@ -257,7 +258,9 @@ syncFSThread appState @ AppState {
   appConfig = AppConfig { repositoryPathOpt = repoDir }
   } = do
   uuid <- nextRandom
-  go (U.uuid2SessionId uuid) (Serial 1) $ SyncFSData DQ.empty 0
+  let currentSessionId = U.uuid2SessionId uuid
+  _ <- scheduleFullCleanup currentSessionId
+  go currentSessionId (Serial 1) $ SyncFSData DQ.empty 0
   where
     go sessionId serial syncData = do
       timestamp "syncFSThread 1: "
@@ -291,11 +294,18 @@ syncFSThread appState @ AppState {
       go sessionId (U.nextS serial) newSyncData
 
     scheduleDeltaRemoval (SessionId sId) (Serial s) = void $ do
+      -- TODO Make it configurable
       threadDelay $ 3600*1000*1000
       removeFile $ repoDir </> show sId </> show s </> "delta.xml"
-      return ()
 
-
+    scheduleFullCleanup (SessionId sId) = forkIO $ do
+      -- TODO Make it configurable
+      threadDelay $ 3600*1000*1000
+      dirs <- getDirectoryContents repoDir
+      let filterOut = [".", "..", T.unpack sId]
+      let otherSessions = catMaybes [ fromString d | d <- dirs, d `notElem` filterOut]
+      let sessionsToDelete = map (\d -> repoDir </> toString d) otherSessions
+      mapM_ removeDirectory sessionsToDelete
 
 
 syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())
@@ -305,9 +315,7 @@ syncToFS (sessionId @ (SessionId sId), Serial s)
       repositoryPathOpt = repoDir,
       repositoryBaseUrlOpt = repoUrl
     }} (snapshotXml, snapshotHash) (deltaXml, _) deltas = do
-      createDirectoryIfMissing False repoDir
-      createDirectoryIfMissing False $ repoDir </> T.unpack sId
-      createDirectoryIfMissing False storeDir
+      createDirectoryIfMissing True storeDir
       _ <- writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
       _ <- writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
       writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
