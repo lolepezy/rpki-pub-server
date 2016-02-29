@@ -25,7 +25,6 @@ import qualified Data.Text                  as T
 import           Data.Acid
 import           Data.Acid.Advanced         (update', query')
 
-import           Data.UUID               (fromString, toString)
 import           Data.UUID.V4               (nextRandom)
 
 import           System.Directory
@@ -189,7 +188,7 @@ tActionSeq clientId pdus tReposState = go pdus
 rrdpSyncThread :: AppState -> IO ()
 rrdpSyncThread AppState {
     currentState  = currentImMemoryState,
-    appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod },
+    appConfig     = AppConfig { snapshotSyncPeriodOpt = syncPeriod },
     changeSetSync = sync,
     syncFSVar     = syncFS } = do
       t0 <- getCurrentTime
@@ -212,7 +211,6 @@ rrdpSyncThread AppState {
           doSyncWaitAgain lastState pdus t1
           timestamp " time 5 = "
 
-      -- TODO Make these 10 seconds configurable
       longEnough utc1 utc2 = diffUTCTime utc1 utc2 < syncMinPeriod
 
       doSyncWaitAgain lastState pdus newTime = do
@@ -247,18 +245,18 @@ data SyncFSData = SyncFSData {
   totalDeltaSize :: Integer
 }
 
-{-
-  TODO Schedule clean up of old snapshots
-  TODO Implement redundant delta removals
--}
 syncFSThread :: AppState -> IO ()
 syncFSThread appState @ AppState {
   syncFSVar = syncFS,
-  appConfig = AppConfig { repositoryPathOpt = repoDir }
+  appConfig = AppConfig {
+    repositoryPathOpt = repoDir,
+    oldDataRetainPeriodOpt = retainPeriod
+    }
   } = do
   uuid <- nextRandom
   let currentSessionId = U.uuid2SessionId uuid
   _ <- scheduleFullCleanup currentSessionId
+  _ <- scheduleOldSnapshotsCleanup currentSessionId
   go currentSessionId (Serial 1) $ SyncFSData DQ.empty 0
   where
     go sessionId serial syncData = do
@@ -288,37 +286,35 @@ syncFSThread appState @ AppState {
 
       fs <- syncToFS (sessionId, serial) appState (snapshotXml, snapshotHash) (deltaXml, deltaHash) deltas
 
-      mapM_ (forkIO . scheduleDeltaRemoval sessionId) deltaSerialsToDelete
+      mapM_ (scheduleDeltaRemoval sessionId) deltaSerialsToDelete
 
       go sessionId (U.nextS serial) newSyncData
 
-    scheduleDeltaRemoval (SessionId sId) (Serial s) = void $ do
-      -- TODO Make it configurable
-      threadDelay $ 3600*1000*1000
+    scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
+      threadDelay retainPeriod
       removeFile $ repoDir </> show sId </> show s </> "delta.xml"
 
     scheduleFullCleanup (SessionId sId) = forkIO $ do
-      -- TODO Make it configurable
-      threadDelay $ 3600*1000*1000
+      threadDelay retainPeriod
       dirs <- getDirectoryContents repoDir
+      -- don't touch '.', '..' and the current session directory
       let filterOut = [".", "..", T.unpack sId]
-      let otherSessions = catMaybes [ fromString d | d <- dirs, d `notElem` filterOut]
-      let sessionsToDelete = map (\d -> repoDir </> toString d) otherSessions
+      let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
       mapM_ removeDirectory sessionsToDelete
 
-
-    -- TODO Remove all but the last one
     scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ do
-      -- TODO Make it configurable
-      threadDelay $ 3600*1000*1000
+      threadDelay retainPeriod
       let sessionDir = repoDir </> T.unpack sId
-      dirsOfInterest <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
+      allDirs <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
+      let maxSerial = maximum $ mapMaybe U.maybeInteger allDirs
       mapM_ (\d -> do
+              let period = 3600 :: NominalDiffTime
               let snapshotFile = sessionDir </> d </> "snapshot.xml"
-              -- TODO Remove only if it's been accessed long ago
-              removeFile snapshotFile
-              return ()
-            ) dirsOfInterest
+              ctime <- getModificationTime snapshotFile
+              now   <- getCurrentTime
+              -- don't delete the last one
+              when (show maxSerial /= d && diffUTCTime now ctime < period) $ removeFile snapshotFile
+            ) allDirs
 
 
 syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())
