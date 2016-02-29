@@ -32,13 +32,8 @@ mkBase64 s = case B64.decode s of
 getHash :: L.ByteString -> Hash
 getHash s = Hash . L.fromStrict . B16.encode . SHA256.hashlazy $ s
 
-parseSerial :: String -> Either ParseError Int
-parseSerial s = case maybeInt s of
-  Just d  -> Right d
-  Nothing -> Left $ BadSerial $ T.pack s
-
-maybeInt :: String -> Maybe Int
-maybeInt s = case reads s of
+maybeInteger :: String -> Maybe Integer
+maybeInteger s = case reads s of
   [(d,"")] -> Just d
   _        -> Nothing
 

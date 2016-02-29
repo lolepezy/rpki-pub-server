@@ -8,7 +8,7 @@ import           Data.SafeCopy              (base, deriveSafeCopy)
 import qualified Data.Text                  as T
 import           Network.URI
 
-newtype Serial = Serial Int deriving (Show, Eq, Ord, Typeable, Data)
+newtype Serial = Serial Integer deriving (Show, Eq, Ord, Typeable, Data)
 newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord, Typeable, Data)
 newtype Version = Version Int deriving (Show, Eq, Ord, Typeable, Data)
 
