@@ -31,7 +31,7 @@ main = runCommand $ \opts _ -> setupWebAppAcid opts
 
 
 setupWebAppAcid :: AppConfig -> IO ()
-setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
+setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
       appState <- initAppState appConf acid
