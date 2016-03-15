@@ -83,6 +83,8 @@ initAppState appConf acid = do
 
 {-
   TODO Implement <list> requests
+  TODO Support tag attribute in PDUs
+  TODO Adjust it to the latest standart version
 -}
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
 processMessage appState clientId queryXml =
@@ -291,30 +293,41 @@ syncFSThread appState @ AppState {
       go sessionId (U.nextS serial) newSyncData
 
     scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
-      threadDelay retainPeriod
-      removeFile $ repoDir </> show sId </> show s </> "delta.xml"
+      timestamp "scheduleDeltaRemoval 1: "
+      threadDelay $ retainPeriod * 1000 * 1000
+      timestamp "scheduleDeltaRemoval 2: "
+      removeFile $ repoDir </> T.unpack sId </> show s </> "delta.xml"
 
     scheduleFullCleanup (SessionId sId) = forkIO $ do
-      threadDelay retainPeriod
-      dirs <- getDirectoryContents repoDir
-      -- don't touch '.', '..' and the current session directory
-      let filterOut = [".", "..", T.unpack sId]
-      let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
-      mapM_ removeDirectory sessionsToDelete
+      timestamp "scheduleFullCleanup 1: "
+      threadDelay $ retainPeriod * 1000 * 1000
+      timestamp "scheduleFullCleanup 2: "
+      exists <- doesDirectoryExist repoDir
+      when exists $ do
+        dirs <- getDirectoryContents repoDir
+        -- don't touch '.', '..' and the current session directory
+        let filterOut = [".", "..", T.unpack sId, "notification.xml"]
+        let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
+        timestamp $ "sessionsToDelete = " ++ show sessionsToDelete
+        mapM_ removeDirectoryRecursive sessionsToDelete
 
-    scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ do
-      threadDelay retainPeriod
+    scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ forever $ do
+      timestamp "scheduleOldSnapshotsCleanup 1: "
+      threadDelay $ retainPeriod * 1000 * 1000
+      timestamp "scheduleOldSnapshotsCleanup 2: "
       let sessionDir = repoDir </> T.unpack sId
-      allDirs <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
-      let maxSerial = maximum $ mapMaybe U.maybeInteger allDirs
-      mapM_ (\d -> do
-              let period = 3600 :: NominalDiffTime
-              let snapshotFile = sessionDir </> d </> "snapshot.xml"
-              ctime <- getModificationTime snapshotFile
-              now   <- getCurrentTime
-              -- don't delete the last one
-              when (show maxSerial /= d && diffUTCTime now ctime < period) $ removeFile snapshotFile
-            ) allDirs
+      exists <- doesDirectoryExist sessionDir
+      when exists $ do
+        allDirs <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
+        let maxSerial = maximum $ mapMaybe U.maybeInteger allDirs
+        mapM_ (\d -> do
+                let period = 3600 :: NominalDiffTime
+                let snapshotFile = sessionDir </> d </> "snapshot.xml"
+                ctime <- getModificationTime snapshotFile
+                now   <- getCurrentTime
+                -- don't delete the last one
+                when (show maxSerial /= d && diffUTCTime now ctime < period) $ removeFile snapshotFile
+              ) allDirs
 
 
 syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())

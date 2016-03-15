@@ -13,6 +13,7 @@ import           Network.URI
 
 import qualified Text.Read                  as TR
 
+import           Data.Char                 (isSpace)
 import           Data.Maybe                 (mapMaybe)
 import qualified Data.Text                  as T
 import qualified Text.XML.Expat.Format      as XF
@@ -30,7 +31,7 @@ extractPdus pduChildren publishC withdrawC = sequence $ mapMaybe (\e -> case e o
         _                                      -> Nothing
       ) pduChildren
   where
-    getBase64 pChildren = T.concat [ T.filter (`notElem` [' ', '\n', '\t']) t | XT.Text t <- pChildren ]
+    getBase64 pChildren = T.concat [ T.filter (not . isSpace) t | XT.Text t <- pChildren ]
 
 
 getAttr :: [(T.Text, T.Text)] -> String -> Maybe T.Text
