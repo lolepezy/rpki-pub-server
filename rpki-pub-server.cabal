@@ -60,6 +60,8 @@ executable rpki-pub-server
                     ,time >= 1.5
                     ,unagi-chan == 0.4.0.0
                     ,dequeue == 0.1.12
+                    ,random
+                    ,async
 
 
   default-language:    Haskell2010
@@ -92,6 +94,8 @@ test-suite test-rpki-pub
                     ,text >= 1.1
                     ,hexpat >= 0.20
                     ,utf8-string
+                    ,random
+                    ,async
 
 
   default-language:    Haskell2010
