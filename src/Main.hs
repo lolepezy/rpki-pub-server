@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-import           System.Exit
-
 import           Control.Exception          (bracket)
 import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
@@ -22,19 +20,14 @@ import           RRDP.Repo
 import qualified Store                      as ST
 import           Types
 
-die :: String -> IO a
-die err = do putStrLn err
-             exitWith (ExitFailure 1)
-
 main :: IO ()
 main = runCommand $ \opts _ -> setupWebAppAcid opts
-
 
 setupWebAppAcid :: AppConfig -> IO ()
 setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
-      appState <- initAppState appConf acid
+      appState <- initialAppState appConf acid
       simpleHTTP nullConf { port = pPort } $ msum [
           dir "message" $ method POST >>
              rpkiContentType (processMessageAcid appState),
@@ -47,6 +40,7 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
 
           path $ \sessionId -> path $ \deltaNumber -> dir "delta.xml" $ method GET >>
             let
+              -- force types here
               serveDelta :: String -> Integer -> ServerPart Response
               serveDelta sid dn = serveXml appConf $ sid ++ "/" ++ show dn ++ "/delta.xml"
             in serveDelta sessionId deltaNumber
