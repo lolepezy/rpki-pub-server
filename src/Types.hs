@@ -45,11 +45,12 @@ data Publish = Publish !URI !Base64 !(Maybe Hash)
 data Withdraw = Withdraw !URI !Hash
   deriving (Show, Eq, Ord, Typeable, Data)
 
-data QueryPdu = QP Publish | QW Withdraw
+data QueryPdu = QP Publish | QW Withdraw | QL
   deriving (Show, Eq, Ord, Typeable, Data)
 
 data ReplyPdu = PublishR !URI
   | WithdrawR !URI
+  | ListR [ReplyPdu]
   | ReportError !RepoError
   deriving (Show, Eq)
 
@@ -97,7 +98,7 @@ data RepoError = CannotFindSnapshot !SessionId
   deriving (Eq, Show, Typeable, Data)
 
 -- private utility type to make logic easier to understand
-data ObjOperation a u d w = AddOrUpdate_ u | Delete_ d | Wrong_ w
+data ObjOperation a u d w = AddOrUpdate_ u | Delete_ d | Wrong_ w | List_ ClientId
   deriving (Eq, Show, Typeable, Data)
 
 type Action = ObjOperation (URI, Base64) (URI, Base64) URI RepoError
