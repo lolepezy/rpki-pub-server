@@ -42,14 +42,17 @@ type RRDPValue r = Either RRDPError r
 
 type RRDPResponse = RRDPValue L.ByteString
 
+type ChangeSet = [QueryPdu]
+
 type RepoState  = [(URI, (Base64, ClientId))]
-type TRepoState = TMap.Map URI (Base64, ClientId)
+type TRepoMap   = TMap.Map URI (Base64, ClientId)
+type TRepoState = (TMap.Map URI (Base64, ClientId), TVar ChangeSet)
 
 data AppState = AppState {
   currentState  :: TRepoState,
   acidRepo      :: AcidState ST.Repo,
-  changeSetSync :: TChan [QueryPdu],
-  syncFSVar     :: MVar (RepoState, [QueryPdu]),
+  changeSetSync :: TChan ChangeSet,
+  syncFSVar     :: MVar (RepoState, ChangeSet),
   appConfig     :: AppConfig
 }
 
@@ -58,17 +61,17 @@ data RollbackException = RollbackException [Action] deriving (Typeable, Show)
 instance Exception RollbackException
 
 
-initAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
-initAppState appConf acid = do
+initialAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
+initialAppState appConf acid = do
   syncFS    <- newEmptyMVar
   ros       <- query' acid ST.GetAllObjects
-  (m, chan) <- atomically $ (,) <$> stmMapFromList ros <*> newTChan
+  (m, chan, changeLog) <- atomically $ (,,) <$> stmMapFromList ros <*> newTChan <*> newTVar []
   let appState = AppState {
     appConfig = appConf,
     acidRepo = acid,
     changeSetSync = chan,
     syncFSVar = syncFS,
-    currentState = m
+    currentState = (m, changeLog)
   }
   _ <- forkIO $ rrdpSyncThread appState
   _ <- forkIO $ syncFSThread appState
@@ -80,11 +83,11 @@ initAppState appConf acid = do
       _ <- sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
       return m
 
-
 {-
   TODO Implement <list> requests
   TODO Support tag attribute in PDUs
-  TODO Adjust it to the latest standart version
+  TODO Adjust it to the latest standard version
+  TODO Add proper logging
 -}
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
 processMessage appState clientId queryXml =
@@ -95,7 +98,7 @@ processMessage appState clientId queryXml =
 
 applyActionsToState :: AppState -> ClientId -> QMessage -> IO (Either RRDPError (AppState, L.ByteString))
 applyActionsToState appState @ AppState {
-    currentState = currentImMemoryState,
+    currentState = (tRepoMap, changeLog),
     acidRepo = repo,
     changeSetSync = changeQueue }
     clientId (Message _ pdus) = do
@@ -103,16 +106,15 @@ applyActionsToState appState @ AppState {
   return $ Right (appState, XS.createReply $ message actions)
   where
     applyToState = AS.atomically $ do
-      actions <- AS.liftAdv $ tActionSeq clientId pdus currentImMemoryState
+      actions <- AS.liftAdv $ tActionSeq clientId pdus tRepoMap
       let errors = [ ReportError err | Wrong_ err <- actions ]
-      case errors of
-        -- in case errors are present, rollback the transaction
-        -- and return the actions
-        (_:_) -> AS.liftAdv $ throwSTM $ RollbackException actions
-        []    -> do
-          -- notify the snapshot writing thread
-          AS.liftAdv $ notifySnapshotWritingThread pdus
-          AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
+      if null errors then do
+        -- notify the snapshot writing thread
+        AS.liftAdv $ modifyTVar changeLog (++ pdus)
+        AS.liftAdv $ notifySnapshotWritingThread pdus
+        AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
+      else
+        AS.liftAdv $ throwSTM $ RollbackException actions
 
       return actions
 
@@ -125,18 +127,18 @@ applyActionsToState appState @ AppState {
                  Wrong_ err            -> ReportError err
               | a <- actions ]
 
-    notifySnapshotWritingThread :: [QueryPdu] -> STM ()
-    notifySnapshotWritingThread = writeTChan changeQueue
+    notifySnapshotWritingThread :: ChangeSet -> STM ()
+    notifySnapshotWritingThread = writeTChan changeQueue      
 
 
-stateSnapshot :: TRepoState -> STM RepoState
+stateSnapshot :: TRepoMap -> STM RepoState
 stateSnapshot tmap = LT.toList (TMap.stream tmap)
 
 {-
   Create actions only until the first error to avoid
   redundant STM modify/rollback overhead.
  -}
-tActionSeq :: ClientId -> [QueryPdu] -> TRepoState -> STM [Action]
+tActionSeq :: ClientId -> [QueryPdu] -> TRepoMap -> STM [Action]
 tActionSeq clientId pdus tReposState = go pdus
  where
   go :: [QueryPdu] -> STM [Action]
@@ -151,7 +153,7 @@ tActionSeq clientId pdus tReposState = go pdus
   applyActionToMap :: Action -> STM Action
   applyActionToMap a@(AddOrUpdate_ (uri, base64)) = const a <$> TMap.insert (base64, clientId) uri tReposState
   applyActionToMap a@(Delete_ uri)                = const a <$> TMap.delete uri tReposState
-  applyActionToMap a@(Wrong_ _)                   = return a
+  applyActionToMap a                              = return a
 
   makeAction :: QueryPdu -> STM Action
   makeAction p =
@@ -186,10 +188,12 @@ tActionSeq clientId pdus tReposState = go pdus
            Nothing -> Wrong_ $ ObjectNotFound uri
            Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck uri hash h $ Delete_ uri
 
+       QL -> return $ List_ clientId
+
 
 rrdpSyncThread :: AppState -> IO ()
 rrdpSyncThread AppState {
-    currentState  = currentImMemoryState,
+    currentState  = (tRepoMap, changeLog),
     appConfig     = AppConfig { snapshotSyncPeriodOpt = syncPeriod },
     changeSetSync = sync,
     syncFSVar     = syncFS } = do
@@ -199,10 +203,15 @@ rrdpSyncThread AppState {
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
         timestamp " time 0 = "
-        (changes, lastState) <- atomically $ (,) <$> getCurrentChanContent sync <*> stateSnapshot currentImMemoryState
+
+        (pdus, lastState) <- atomically $ do
+          _         <- readTChan sync
+          lastState <- stateSnapshot tRepoMap
+          changes   <- readTVar changeLog
+          return (changes, lastState)
+
         timestamp " time 1 = "
         t1      <- getCurrentTime
-        let pdus = concat changes
         if longEnough t0 t1 then do
           timestamp " time 2 = "
           doSyncWaitAgain lastState pdus t1
@@ -218,14 +227,6 @@ rrdpSyncThread AppState {
       doSyncWaitAgain lastState pdus newTime = do
         putMVar syncFS (lastState, pdus)
         waitAndProcess newTime
-
-      getCurrentChanContent ch = do
-        x     <- readTChan ch
-        empty <- isEmptyTChan ch
-        if empty then
-          return [x]
-        else
-          (x :) <$> getCurrentChanContent ch
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
 
