@@ -5,37 +5,40 @@
 module RRDP.Repo where
 
 import           Control.Concurrent
-import qualified Control.Concurrent.AdvSTM  as AS
-import           Control.Concurrent.STM     as S
+import qualified Control.Concurrent.AdvSTM    as AS
+import           Control.Concurrent.STM       as S
+import           Control.Concurrent.STM.TMVar (TMVar, takeTMVar, tryPutTMVar)
 import           Control.Exception.Base
 import           Control.Monad
-import           Data.Data                  (Typeable)
+import           Data.Data                    (Typeable)
 import           Data.Foldable
+import           Data.Function                (on)
+import           Data.List                    (sortBy)
 import           Data.Maybe
 import           Data.Time.Clock
-import qualified ListT                      as LT
+import qualified ListT                        as LT
 import           Network.URI
-import qualified STMContainers.Map          as TMap
+import qualified STMContainers.Map            as TMap
 
-import qualified Data.Dequeue               as DQ
+import qualified Data.Dequeue                 as DQ
 
-import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Text                  as T
+import qualified Data.ByteString.Lazy.Char8   as L
+import qualified Data.Text                    as T
 
 import           Data.Acid
-import           Data.Acid.Advanced         (update', query')
+import           Data.Acid.Advanced           (query', update')
 
-import           Data.UUID.V4               (nextRandom)
+import           Data.UUID.V4                 (nextRandom)
 
 import           System.Directory
 import           System.FilePath
 import           System.IO.Error
 
 import           Config
-import qualified RRDP.XML                   as XS
-import qualified Store                      as ST
+import qualified RRDP.XML                     as XS
+import qualified Store                        as ST
 import           Types
-import qualified Util                       as U
+import qualified Util                         as U
 
 
 type RRDPValue r = Either RRDPError r
@@ -46,42 +49,47 @@ type ChangeSet = [QueryPdu]
 
 type RepoState  = [(URI, (Base64, ClientId))]
 type TRepoMap   = TMap.Map URI (Base64, ClientId)
-type TRepoState = (TMap.Map URI (Base64, ClientId), TVar ChangeSet)
+type TChangeLog = (TMap.Map Integer ChangeSet, TVar Integer)
+type TRepoState = (TRepoMap, TChangeLog)
 
 data AppState = AppState {
-  currentState  :: TRepoState,
-  acidRepo      :: AcidState ST.Repo,
-  changeSetSync :: TChan ChangeSet,
-  syncFSVar     :: MVar (RepoState, ChangeSet),
-  appConfig     :: AppConfig
+  currentState :: TRepoState,
+  acidRepo     :: AcidState ST.Repo,
+  changeSync   :: TMVar ChangeSet,
+  appConfig    :: AppConfig
 }
 
 data RollbackException = RollbackException [Action] deriving (Typeable, Show)
 
 instance Exception RollbackException
 
-
-initialAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
-initialAppState appConf acid = do
-  syncFS    <- newEmptyMVar
-  ros       <- query' acid ST.GetAllObjects
-  (m, chan, changeLog) <- atomically $ (,,) <$> stmMapFromList ros <*> newTChan <*> newTVar []
-  let appState = AppState {
-    appConfig = appConf,
-    acidRepo = acid,
-    changeSetSync = chan,
-    syncFSVar = syncFS,
-    currentState = (m, changeLog)
-  }
-  _ <- forkIO $ rrdpSyncThread appState
-  _ <- forkIO $ syncFSThread appState
-
-  return appState
+initialTRepo :: [ST.RepoObject] -> STM TRepoState
+initialTRepo repoObjects = do
+  tmap    <- stmMapFromList repoObjects
+  logMap  <- TMap.new
+  counter <- newTVar 0
+  return (tmap, (logMap, counter))
   where
     stmMapFromList list = do
       m <- TMap.new
       _ <- sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
       return m
+
+initialAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
+initialAppState appConf acid = do
+  ros       <- query' acid ST.GetAllObjects
+  (tRepo, syncV, fsSyncChan) <- atomically $ (,,) <$> initialTRepo ros <*> newEmptyTMVar <*> newTChan
+  let appState = AppState {
+    appConfig = appConf,
+    acidRepo = acid,
+    changeSync = syncV,
+    currentState = tRepo
+  }
+  _ <- forkIO $ rrdpSyncThread fsSyncChan appState
+  _ <- forkIO $ syncFSThread fsSyncChan appState
+
+  return appState
+
 
 {-
   TODO Implement <list> requests
@@ -100,7 +108,7 @@ applyActionsToState :: AppState -> ClientId -> QMessage -> IO (Either RRDPError 
 applyActionsToState appState @ AppState {
     currentState = (tRepoMap, changeLog),
     acidRepo = repo,
-    changeSetSync = changeQueue }
+    changeSync = chSync }
     clientId (Message _ pdus) = do
   actions <- applyToState `catch` rollbackActions
   return $ Right (appState, XS.createReply $ message actions)
@@ -109,9 +117,9 @@ applyActionsToState appState @ AppState {
       actions <- AS.liftAdv $ tActionSeq clientId pdus tRepoMap
       let errors = [ ReportError err | Wrong_ err <- actions ]
       if null errors then do
-        -- notify the snapshot writing thread
-        AS.liftAdv $ modifyTVar changeLog (++ pdus)
-        AS.liftAdv $ notifySnapshotWritingThread pdus
+        AS.liftAdv $ do
+          updateChangeLog changeLog
+          void $ notifySnapshotWritingThread pdus
         AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
       else
         AS.liftAdv $ throwSTM $ RollbackException actions
@@ -120,6 +128,15 @@ applyActionsToState appState @ AppState {
 
     rollbackActions (RollbackException as) = return as
 
+    updateChangeLog :: TChangeLog -> STM ()
+    updateChangeLog (changeMap, counter) = do
+      c <- readTVar counter
+      TMap.insert pdus c changeMap
+      writeTVar counter (c + 1)
+
+    notifySnapshotWritingThread = tryPutTMVar chSync
+
+
     message actions = Message (Version 1) responsePdus
       where responsePdus = [ case a of
                  AddOrUpdate_ (uri, _) -> PublishR uri
@@ -127,12 +144,16 @@ applyActionsToState appState @ AppState {
                  Wrong_ err            -> ReportError err
               | a <- actions ]
 
-    notifySnapshotWritingThread :: ChangeSet -> STM ()
-    notifySnapshotWritingThread = writeTChan changeQueue      
 
 
 stateSnapshot :: TRepoMap -> STM RepoState
 stateSnapshot tmap = LT.toList (TMap.stream tmap)
+
+changeLogSnapshot :: TChangeLog -> STM [(Integer, ChangeSet)]
+changeLogSnapshot (chLog, _) = do
+  chl <- LT.toList (TMap.stream chLog)
+  return $ sortBy (compare `on` fst) chl
+
 
 {-
   Create actions only until the first error to avoid
@@ -191,12 +212,12 @@ tActionSeq clientId pdus tReposState = go pdus
        QL -> return $ List_ clientId
 
 
-rrdpSyncThread :: AppState -> IO ()
-rrdpSyncThread AppState {
-    currentState  = (tRepoMap, changeLog),
+rrdpSyncThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
+rrdpSyncThread syncChan AppState {
+    currentState  = (tRepoMap, tChangeLog),
     appConfig     = AppConfig { snapshotSyncPeriodOpt = syncPeriod },
-    changeSetSync = sync,
-    syncFSVar     = syncFS } = do
+    changeSync    = chSync
+    } = do
       t0 <- getCurrentTime
       waitAndProcess t0
     where
@@ -204,31 +225,36 @@ rrdpSyncThread AppState {
       waitAndProcess t0 = do
         timestamp " time 0 = "
 
-        (pdus, lastState) <- atomically $ do
-          _         <- readTChan sync
-          lastState <- stateSnapshot tRepoMap
-          changes   <- readTVar changeLog
-          return (changes, lastState)
+        -- wait until notified
+        _ <- atomically $ takeTMVar chSync
 
         timestamp " time 1 = "
         t1      <- getCurrentTime
         if longEnough t0 t1 then do
           timestamp " time 2 = "
-          doSyncWaitAgain lastState pdus t1
+          doSyncAndWaitAgain t1
         else do
           timestamp " time 3 = "
           threadDelay $ round (1000 * 1000 * toRational (syncMinPeriod - diffUTCTime t1 t0))
           timestamp " time 4 = "
-          doSyncWaitAgain lastState pdus t1
+          doSyncAndWaitAgain t1
           timestamp " time 5 = "
 
       longEnough utc1 utc2 = diffUTCTime utc1 utc2 < syncMinPeriod
 
-      doSyncWaitAgain lastState pdus newTime = do
-        putMVar syncFS (lastState, pdus)
+      doSyncAndWaitAgain newTime = do
+        atomically $ do
+          lastState <- stateSnapshot tRepoMap
+          changeLog <- changeLogSnapshot tChangeLog
+          let (chMap, _) = tChangeLog
+          mapM_ ((`TMap.delete` chMap) . fst) changeLog
+          writeTChan syncChan (lastState, concatMap snd changeLog)
         waitAndProcess newTime
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
+
+
+
 
 -- temporary poorman logging until the proper one is used
 timestamp :: String -> IO ()
@@ -236,6 +262,12 @@ timestamp s = do
   t <- getCurrentTime
   print $ s ++ show t
 
+
+actorThread :: s -> TChan m -> (s -> m -> IO s) -> IO ()
+actorThread state inbox action  = do
+  m <- atomically $ readTChan inbox
+  s1 <- action state m
+  actorThread s1 inbox action
 
 {-
   syncFSThread creates a thread that flushes the changes to FS.
@@ -248,24 +280,22 @@ data SyncFSData = SyncFSData {
   totalDeltaSize :: Integer
 }
 
-syncFSThread :: AppState -> IO ()
-syncFSThread appState @ AppState {
-  syncFSVar = syncFS,
+syncFSThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
+syncFSThread syncChan appState @ AppState {
   appConfig = AppConfig {
-    repositoryPathOpt = repoDir,
-    oldDataRetainPeriodOpt = retainPeriod
+      repositoryPathOpt = repoDir,
+      oldDataRetainPeriodOpt = retainPeriod
     }
   } = do
   uuid <- nextRandom
   let currentSessionId = U.uuid2SessionId uuid
   _ <- scheduleFullCleanup currentSessionId
   _ <- scheduleOldSnapshotsCleanup currentSessionId
-  go currentSessionId (Serial 1) $ SyncFSData DQ.empty 0
+  go currentSessionId (Serial 1) (SyncFSData DQ.empty 0)
+
   where
     go sessionId serial syncData = do
-      timestamp "syncFSThread 1: "
-      (lastState, pdus) <- takeMVar syncFS
-      timestamp "syncFSThread 2: "
+      (lastState, pdus) <- atomically $ readTChan syncChan
 
       let snapshotXml = serializeSnapshot lastState $ SnapshotDef (Version 3) sessionId serial
           (snapshotSize, snapshotHash) = (U.length snapshotXml, U.getHash snapshotXml)
@@ -274,15 +304,15 @@ syncFSThread appState @ AppState {
           (deltaSize, deltaHash) = (U.length deltaXml, U.getHash deltaXml)
 
           updated :: SyncFSData -> (SyncFSData, [Serial])
-          updated (SyncFSData deltas totalSize) =
-            _updated (DQ.pushFront deltas (pdus, deltaSize, deltaHash, serial)) (totalSize + deltaSize)
+          updated (SyncFSData dts totalSize) =
+            _updated (DQ.pushFront dts (pdus, deltaSize, deltaHash, serial)) (totalSize + deltaSize)
             where
               _updated ds ts
                 | ts < snapshotSize = (SyncFSData ds ts, [])
                 | otherwise = case DQ.popBack ds of
-                  Just ((_, size, _, dSerial), newDeltas) ->
-                    let (newSyncData, toDelete) = _updated newDeltas (ts - size)
-                    in (newSyncData, dSerial : toDelete)
+                  Just ((_, size, _, dSerial), ds') ->
+                    let (syncData', toDelete) = _updated ds' (ts - size)
+                    in (syncData', dSerial : toDelete)
                   Nothing -> (SyncFSData DQ.empty 0, [])
 
       let (newSyncData @ (SyncFSData deltas _), deltaSerialsToDelete) = updated syncData
@@ -292,6 +322,7 @@ syncFSThread appState @ AppState {
       mapM_ (scheduleDeltaRemoval sessionId) deltaSerialsToDelete
 
       go sessionId (U.nextS serial) newSyncData
+
 
     scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
       timestamp "scheduleDeltaRemoval 1: "
@@ -306,7 +337,6 @@ syncFSThread appState @ AppState {
       exists <- doesDirectoryExist repoDir
       when exists $ do
         dirs <- getDirectoryContents repoDir
-        -- don't touch '.', '..' and the current session directory
         let filterOut = [".", "..", T.unpack sId, "notification.xml"]
         let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
         timestamp $ "sessionsToDelete = " ++ show sessionsToDelete
@@ -354,7 +384,7 @@ syncToFS (sessionId @ (SessionId sId), Serial s)
       L.writeFile tmp notification
       renameFile tmp (repoDir </> "notification.xml")
 
-    write_ f = do { _ <- f; return $ Right () }
+    write_ f = f >> return (Right ())
 
 
 

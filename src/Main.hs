@@ -1,14 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+import           Control.Applicative        (optional)
 import           Control.Exception          (bracket)
 import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Happstack.Server           (ServerPart, ToMessage,
-                                             asContentType, askRq, badRequest, look,
-                                             dir, method, notFound, ok, path,
-                                             serveFile, setHeaderM, simpleHTTP,
-                                             toResponse)
+                                             asContentType, askRq, badRequest, queryString,
+                                             dir, look, method, notFound, ok,
+                                             path, serveFile, setHeaderM,
+                                             simpleHTTP, toResponse)
 import           Happstack.Server.Types
 
 import           Data.Acid                  (openLocalState)
@@ -55,11 +56,12 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
 processMessageAcid :: AppState -> ServerPart Response
 processMessageAcid appState = do
     req  <- askRq
-    cId  <- look "clientId"
-    b <- liftIO $ takeRequestBody req
-    case b of
-      Just rqbody -> respond (ClientId cId) rqbody
-      Nothing     -> mkResp badRequest $ L.pack "Request has no body"
+    bod <- liftIO $ takeRequestBody req
+    cId  <- optional $ queryString $ look "clientId"
+    case (bod, cId) of
+      (Just rqbody, Just cid) -> respond (ClientId cid) rqbody
+      (_, Nothing)            -> mkResp badRequest $ L.pack "No clientId provided"
+      (Nothing, _)            -> mkResp badRequest $ L.pack "Request has no body"
     where
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
