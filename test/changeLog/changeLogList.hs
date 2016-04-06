@@ -9,13 +9,14 @@ import System.Random
 import Control.Concurrent.Async
 import           Options
 
+type Key = Int
 type StoredObject = L.ByteString
-data Change = Update L.ByteString StoredObject | Remove L.ByteString
+data Change = Update Key StoredObject | Remove Key
  deriving (Show, Eq)
 
-type AppState = (TMap.Map L.ByteString StoredObject, TVar [Change])
+type AppState = (TMap.Map Key StoredObject, TVar [Change])
 
-traceKey :: [Change] -> [L.ByteString]
+traceKey :: [Change] -> [Key]
 traceKey changes = [ case c of
                       Update key _ -> key
                       Remove key ->   key
@@ -28,12 +29,13 @@ update appState !changes useChangeLog = atomically $ do
                 Update key val -> do
                   v <- TMap.lookup key tm
                   case v of
-                    Nothing -> TMap.insert key val tm
+                    Nothing -> TMap.insert val key tm
                     Just _  -> return ()
                 Remove key  -> TMap.delete key tm
               | c <- changes ]
   when useChangeLog $ modifyTVar' changeLog (\log_ -> changes ++ log_)
-  trace ("processing: " ++ show (traceKey changes)) $ return (tm, changeLog)
+  -- trace ("processing: " ++ show (traceKey changes)) $
+  return (tm, changeLog)
 
 
 randString :: Int -> IO L.ByteString
@@ -48,12 +50,12 @@ randUpdateSet :: Int -> IO [Change]
 randUpdateSet n = do
     !i <- randInt n
     replicateM i $ do
-      (!k1, !v1) <- (,) <$> randString 30 <*> randStringFake 1000
+      (!k1, !v1) <- (,) <$> randInt 4000000000 <*> randStringFake 1000
       return $ Update k1 v1
 
 updater :: AppState -> Int -> Bool -> IO ()
 updater state changes useChangeLog = replicateM_ changes $ do
-  !changeSet <- randUpdateSet 1000
+  !changeSet <- randUpdateSet 250
   void $ update state changeSet useChangeLog
 
 
