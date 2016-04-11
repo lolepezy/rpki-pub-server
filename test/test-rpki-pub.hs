@@ -104,7 +104,7 @@ testWithdrawNotExisting = TestCase $ do
   assertEqual "New repo serial is wrong" (Serial 2) nSerial
   assertEqual "New repo publish set is wrong" [Publish _uri _base64 Nothing] publishes
   assertEqual "New repo deltas are wrong"  (M.fromList [(2, delta2)]) _deltas
-  assertEqual "Response is wrong" (Message (Version 3) [ReportError $ ObjectNotFound _wrongUri]) response
+  assertEqual "Response is wrong" (Message (Version 3) [ReportError $ NoObjectPresent _wrongUri]) response
   where
     (repo1, _) = updateRepo emptyRepo           $ Message (Version 3) [PublishQ _uri _base64 Nothing]
     (replacedRepo, response) = updateRepo repo1 $ Message (Version 3) [WithdrawQ _wrongUri _hash1]
@@ -126,7 +126,7 @@ testWithdrawExistingWithWrongHash = TestCase $ do
   assertEqual "New repo serial is wrong" (Serial 2) nSerial
   assertEqual "New repo publish set is wrong" [Publish _uri _base64 Nothing] publishes
   assertEqual "New repo deltas are wrong"  (M.fromList [(2, delta2)]) _deltas
-  assertEqual "Response is wrong" (Message (Version 3) [ReportError (BadHash {
+  assertEqual "Response is wrong" (Message (Version 3) [ReportError (NoObjectMatchingHash {
            passed = Hash "whatever",
            stored = Hash "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
            uriW = unsafeMkUri "rsync://test.net/repo/aa.cer"

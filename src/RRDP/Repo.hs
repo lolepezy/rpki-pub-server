@@ -97,25 +97,29 @@ initialAppState appConf acid = do
   TODO Adjust it to the latest standard version
   TODO Add proper logging
 -}
-processMessage :: AppState -> ClientId -> L.ByteString -> IO (Either RRDPError (AppState, L.ByteString))
+processMessage :: AppState -> ClientId -> L.ByteString -> IO (AppState, L.ByteString)
 processMessage appState clientId queryXml =
   case XS.parseMessage queryXml of
-    Left e              -> return $ Left $ BadMessage e
-    Right parsedMessage -> applyActionsToState appState clientId parsedMessage
+    Left e                    -> return (appState, XS.createReply $ Errors [XMLError e])
+    Right ListMessage         -> listObjects appState clientId
+    Right (PduMessage _ pdus) -> applyActionsToState appState clientId pdus
 
 
-applyActionsToState :: AppState -> ClientId -> QMessage -> IO (Either RRDPError (AppState, L.ByteString))
+listObjects :: AppState -> ClientId -> IO (AppState, L.ByteString)
+listObjects appState clientId = return (appState, "")
+
+applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, L.ByteString)
 applyActionsToState appState @ AppState {
     currentState = (tRepoMap, changeLog),
     acidRepo = repo,
     changeSync = chSync }
-    clientId (Message _ pdus) = do
+    clientId pdus = do
   actions <- applyToState `catch` rollbackActions
-  return $ Right (appState, XS.createReply $ message actions)
+  return (appState, XS.createReply $ reply actions)
   where
     applyToState = AS.atomically $ do
       actions <- AS.liftAdv $ tActionSeq clientId pdus tRepoMap
-      let errors = [ ReportError err | Wrong_ err <- actions ]
+      let errors = [ e | Wrong_ e <- actions ]
       if null errors then do
         AS.liftAdv $ do
           updateChangeLog changeLog
@@ -136,14 +140,8 @@ applyActionsToState appState @ AppState {
 
     notifySnapshotWritingThread = tryPutTMVar chSync
 
-
-    message actions = Message (Version 1) responsePdus
-      where responsePdus = [ case a of
-                 AddOrUpdate_ (uri, _) -> PublishR uri
-                 Delete_ uri           -> WithdrawR uri
-                 Wrong_ err            -> ReportError err
-              | a <- actions ]
-
+    reply []      = Success
+    reply actions = Errors [ e | Wrong_ e <- actions ]
 
 
 stateSnapshot :: TRepoMap -> STM RepoState
@@ -181,11 +179,11 @@ tActionSeq clientId pdus tReposState = go pdus
    let
      withClientIdCheck objUri sClientId f
          | sClientId == clientId = f
-         | otherwise = Wrong_ CannotChangeOtherClientObject { oUri = objUri, storedClientId = sClientId, queryClientId = clientId }
+         | otherwise = Wrong_ PermissionFailure { oUri = objUri, storedClientId = sClientId, queryClientId = clientId }
 
-     withHashCheck uri queryHash storedHash f
+     withHashCheck queryHash storedHash f
          | queryHash == storedHash = f
-         | otherwise = Wrong_ BadHash { passed = queryHash, stored = storedHash, uriW = uri }
+         | otherwise = Wrong_ $ NoObjectMatchingHash storedHash p
 
      lookupObject :: URI -> STM (Maybe (Base64, ClientId))
      lookupObject u = TMap.lookup u tReposState
@@ -195,21 +193,19 @@ tActionSeq clientId pdus tReposState = go pdus
          o <- lookupObject uri
          return $ case o of
            Nothing -> AddOrUpdate_ (uri, base64)
-           Just _  -> Wrong_ $ CannotInsertExistingObject uri
+           Just _  -> Wrong_ $ ObjectAlreadyPresent p
 
        QP (Publish uri base64 (Just hash)) -> do
          o <- lookupObject uri
          return $ case o of
-           Nothing -> Wrong_ $ ObjectNotFound uri
-           Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck uri hash h $ AddOrUpdate_ (uri, base64)
+           Nothing -> Wrong_ $ NoObjectPresent uri hash
+           Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck hash h $ AddOrUpdate_ (uri, base64)
 
        QW (Withdraw uri hash) -> do
          o <- lookupObject uri
          return $ case o of
-           Nothing -> Wrong_ $ ObjectNotFound uri
-           Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck uri hash h $ Delete_ uri
-
-       QL -> return $ List_ clientId
+           Nothing -> Wrong_ $ NoObjectPresent uri hash
+           Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck hash h $ Delete_ uri
 
 
 rrdpSyncThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
@@ -262,12 +258,6 @@ timestamp s = do
   t <- getCurrentTime
   print $ s ++ show t
 
-
-actorThread :: s -> TChan m -> (s -> m -> IO s) -> IO ()
-actorThread state inbox action  = do
-  m <- atomically $ readTChan inbox
-  s1 <- action state m
-  actorThread s1 inbox action
 
 {-
   syncFSThread creates a thread that flushes the changes to FS.

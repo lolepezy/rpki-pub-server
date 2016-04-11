@@ -66,7 +66,7 @@ processMessageAcid appState = do
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
         m <- liftIO $ processMessage appState clientId $ unBody rqbody
-        respondRRDP $ snd <$> m
+        mkResp ok $ snd m
 
 
 rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
@@ -74,24 +74,6 @@ rpkiContentType response = setHeaderM "Content-Type" "text/xml" >> response
 
 -- TODO Set the proper content type for XML files we serve
 rrdpContentType response = setHeaderM "Content-Type" "text/xml" >> response
-
-
-respondRRDP :: Either RRDPError L.ByteString -> ServerPart Response
-respondRRDP (Right response) = mkResp ok response
-
-respondRRDP (Left (NoDelta (SessionId sessionId) (Serial serial))) = mkResp notFound $
-  L.pack $ "No delta for session_id " ++ show sessionId ++ " and serial " ++ show serial
-
-respondRRDP (Left (NoSnapshot (SessionId sessionId))) = mkResp notFound $
-  L.pack $ "No snapshot for session_id " ++ show sessionId
-
--- respondRRDP (Left (BadHash { passed = p, stored = s, uriW = u })) = badRequest $
---   L.pack $ "The replacement for the object " ++ show u ++ " has hash "
---                ++ show s ++ " but is expected to have hash " ++ show p
-
-respondRRDP (Left (BadMessage parseError)) = mkResp badRequest $ L.pack $ "Message parse error " ++ show parseError
-
-respondRRDP (Left e) = mkResp badRequest $ L.pack $ "Error: " ++ show e
 
 mkResp :: ToMessage a => (Response -> t) -> a -> t
 mkResp resp output = resp $ toResponse output

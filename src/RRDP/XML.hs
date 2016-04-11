@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE RecordWildCards   #-}
 module RRDP.XML where
 
 import qualified Data.ByteString.Char8      as BS
@@ -13,7 +14,7 @@ import           Network.URI
 
 import qualified Text.Read                  as TR
 
-import           Data.Char                 (isSpace)
+import           Data.Char                  (isSpace)
 import           Data.Maybe                 (mapMaybe)
 import qualified Data.Text                  as T
 import qualified Text.XML.Expat.Format      as XF
@@ -32,6 +33,26 @@ extractPdus pduChildren publishC withdrawC = sequence $ mapMaybe (\e -> case e o
       ) pduChildren
   where
     getBase64 pChildren = T.concat [ T.filter (not . isSpace) t | XT.Text t <- pChildren ]
+
+
+tryParseList :: [XT.UNode T.Text] -> Either ParseError Bool
+tryParseList [] = Left NoPdus
+tryParseList children = if listExists children then
+        if elementCount children > 1 then
+          Left ListWithPdus
+        else
+          Right True
+      else
+        Right False
+  where
+    listExists = any (\e -> case e of
+        XT.Element "list" _ _  -> True
+        _                      -> False
+      )
+    elementCount x = length $ filter (\e -> case e of
+        XT.Element {}  -> True
+        _                 -> False
+      ) x
 
 
 getAttr :: [(T.Text, T.Text)] -> String -> Maybe T.Text
@@ -86,20 +107,15 @@ parseGeneric xml extract = case err of
     extractData _ = Left $ BadXml $ T.pack "Couldn't find the main document element"
 
 
-parseMessage :: LBS.ByteString -> Either ParseError QMessage
+parseMessage :: LBS.ByteString -> Either ParseError (QMessage QueryPdu)
 parseMessage xml = parseGeneric xml $ \attrs children -> do
-  version  <- parseVersion attrs "3"
-  pdus <- extractPdus children parsePublish parseWithdraw
-  return $ Message version pdus
-
-
-extractCommonAttrs :: [(T.Text, T.Text)] -> Either ParseError (SessionId, Version, Serial)
-extractCommonAttrs attrs = do
-  sessionId <- U.maybeToEither NoSessionId $ getAttr attrs "session_id"
-  sSerial   <- U.maybeToEither NoSerial $ getAttr attrs "serial"
-  version   <- parseVersion attrs "1"
-  serial    <- U.maybeToEither (BadSerial sSerial) (TR.readMaybe $ T.unpack sSerial)
-  return (SessionId sessionId, version, Serial serial)
+  version   <- parseVersion attrs $ T.pack protocolVersion
+  maybeList <- tryParseList children
+  if maybeList then
+    return ListMessage
+  else do
+    pdus <- extractPdus children parsePublish parseWithdraw
+    return $ PduMessage version pdus
 
 
 verifyXmlNs :: T.Text -> Either ParseError ()
@@ -110,6 +126,10 @@ type Elem s = XT.Node String s
 
 mkElem :: U.BString s => String -> [(String, s)] -> [Elem s] -> Elem s
 mkElem = XT.Element
+
+pduElem :: QueryPdu -> Elem BS.ByteString
+pduElem (QP (Publish u b64 mHash)) = publishElem u b64 mHash
+pduElem (QW (Withdraw u hash))     = withdrawElem u hash
 
 publishElem :: URI -> Base64 -> Maybe Hash -> Elem BS.ByteString
 publishElem uri base64 Nothing            = mkElem "publish" [("uri", U.pack $ show uri)] [XT.Text $ U.base64bs base64]
@@ -136,18 +156,38 @@ commonElem (Version version) (SessionId uuid) (Serial serial) elemName = mkElem 
   ]
 
 
-createReply :: RMessage -> LBS.ByteString
-createReply (Message version pdus) = XF.formatNode $
-  mkElem "msg" [("version", printV version), ("type", BS.pack "reply")] $ map (\pdu ->
-      case pdu of
-        PublishR uri  -> pduElem "publish" uri
-        WithdrawR uri -> pduElem "withdraw" uri
-        ReportError e -> reportErrorElem e
-      ) pdus
+createReply :: Reply -> LBS.ByteString
+createReply reply = XF.formatNode $
+  mkElem "msg" [("version", BS.pack protocolVersion), ("type", BS.pack "reply")] $ formatReply reply
   where
-      printV (Version v) = BS.pack $ show v
-      pduElem name uri = mkElem name [("uri", BS.pack $ show uri)] []
-      reportErrorElem e = mkElem "report_error" [("error_code", BS.pack $ show e)] []
+    formatReply :: Reply -> [ Elem BS.ByteString ]
+    formatReply Success = [ mkElem "success" [] []]
+    formatReply (ListReply listPdus) = map (\(ListPdu uri (Hash hash)) ->
+        mkElem "list" [("uri", BS.pack $ show uri), ("hash", U.strict hash)] []
+      ) listPdus
+    formatReply (Errors errors) = map reportError errors
+
+    reportError :: RepoError -> Elem BS.ByteString
+    reportError (XMLError parseError)  = errorElem "xml_error"          [ textElem $ BS.pack $ show parseError ]
+    reportError PermissionFailure{..}  = errorElem "permission_failure" [XT.Text $ BS.pack message]
+      where message = "Cannot update object " ++ show oUri ++
+                     " on behalf of " ++ show queryClientId ++
+                     ", it belongs to the client " ++ show storedClientId
+
+    reportError (BadCmsSignature pdu)              = errorElem "bad_cms_signature"      [pduE pdu]
+    reportError (ObjectAlreadyPresent pdu)         = errorElem "object_already_present" [pduE pdu]
+    reportError (NoObjectPresent uri (Hash hash))  = errorElem "no_object_present"      [XT.Text $ BS.pack message]
+      where message = "Object " ++ show uri ++ " with hash " ++ show hash ++ " is not found."
+
+    reportError (NoObjectMatchingHash (Hash hash) pdu) = errorElem "no_object_matching_hash" [ textElem $ BS.pack message, pduE pdu ]
+      where message = "Object in the <publish> element doesn't have hash " ++ show hash
+
+    reportError (ConsistencyProblem text) = errorElem "consistency_problem" [ textElem $ U.text2bs text ]
+    reportError (OtherError text)          = errorElem "other_error"        [ textElem $ U.text2bs text ]
+
+    pduE p = mkElem "failed_pdu" [] [pduElem p]
+    errorElem code = mkElem "report_error" [("error_code", code)]
+    textElem message = mkElem "error_text" [] [XT.Text message]
 
 format :: Elem BS.ByteString -> LBS.ByteString
 format = XF.formatNode

@@ -32,12 +32,10 @@ data Snapshot = Snapshot !SnapshotDef [Publish]
 data Delta = Delta !DeltaDef [QueryPdu]
   deriving (Show, Eq, Ord, Typeable, Data)
 
--- publish/withdraw messages
-data Message pdu = Message !Version [pdu]
-  deriving (Show, Eq)
+type Message = QMessage QueryPdu
 
-type QMessage = Message QueryPdu
-type RMessage = Message ReplyPdu
+data QMessage pdu = PduMessage !Version [pdu] | ListMessage
+  deriving (Show, Eq)
 
 data Publish = Publish !URI !Base64 !(Maybe Hash)
   deriving (Show, Eq, Ord, Typeable, Data)
@@ -45,25 +43,29 @@ data Publish = Publish !URI !Base64 !(Maybe Hash)
 data Withdraw = Withdraw !URI !Hash
   deriving (Show, Eq, Ord, Typeable, Data)
 
-data QueryPdu = QP Publish | QW Withdraw | QL
+data QueryPdu = QP Publish | QW Withdraw
   deriving (Show, Eq, Ord, Typeable, Data)
 
-data ReplyPdu = PublishR !URI
-  | WithdrawR !URI
-  | ListR [ReplyPdu]
-  | ReportError !RepoError
+data ListPdu = ListPdu !URI !Hash
   deriving (Show, Eq)
 
+data Reply = Success
+  | ListReply [ListPdu]
+  | Errors [RepoError]
+  deriving (Show, Eq)
+
+
+protocolVersion :: String
+protocolVersion = "4"
+
 data ParseError = BadXml !T.Text
-              | NoVersion
-              | NoMessageType
-              | BadMessageType !T.Text
               | UnexpectedElement !T.Text
+              | NoPdus
+              | ListWithPdus
               | NoURI
-              | NoSessionId
               | NoSerial
               | NoHash
-              | HashInSnapshotIsNotAllowed
+              | NoVersion
               | BadURI !T.Text
               | BadBase64 !T.Text
               | BadVersion !T.Text
@@ -77,24 +79,17 @@ data RRDPError = NoSnapshot !SessionId
               | SnapshotSyncError !IOError
               | DeltaSyncError !IOError
               | NotificationSyncError !IOError
-              | InconsistentSerial !Int
   deriving (Eq, Show)
 
-data RepoError = CannotFindSnapshot !SessionId
-              | CannotFindDelta !SessionId
-              | NonMatchingSessionId
-              | NonFoundRepoDirectory !String
-              | CouldNotReadRepoDirectory !String
-              | NotFoundSessionWithId !SessionId
-              | BadRRDPVersion !Version
-              | NonContinuousDeltas [Int]
-              | BadSnapshot !SessionId !ParseError
-              | BadDelta !SessionId !Int !ParseError
-              | ObjectNotFound !URI
-              | CannotInsertExistingObject !URI
-              | CannotChangeOtherClientObject { oUri :: !URI, storedClientId :: !ClientId, queryClientId :: !ClientId }
-              | BadHash { passed :: !Hash, stored :: !Hash, uriW :: !URI }
-              | RepoESeq [RepoError]
+
+data RepoError = NoObjectPresent !URI !Hash
+              | ObjectAlreadyPresent !QueryPdu
+              | PermissionFailure { oUri :: !URI, storedClientId :: !ClientId, queryClientId :: !ClientId }
+              | NoObjectMatchingHash !Hash !QueryPdu
+              | BadCmsSignature !QueryPdu
+              | XMLError !ParseError
+              | ConsistencyProblem !T.Text
+              | OtherError !T.Text
   deriving (Eq, Show, Typeable, Data)
 
 -- private utility type to make logic easier to understand

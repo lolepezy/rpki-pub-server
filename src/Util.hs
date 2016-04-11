@@ -30,7 +30,7 @@ mkBase64 s = case B64.decode s of
    Left err  -> Left $ BadBase64 $ T.pack err
 
 getHash :: L.ByteString -> Hash
-getHash s = Hash . L.fromStrict . B16.encode . SHA256.hashlazy $ s
+getHash = Hash . L.fromStrict . B16.encode . SHA256.hashlazy
 
 maybeInteger :: String -> Maybe Integer
 maybeInteger s = case reads s of
@@ -42,6 +42,9 @@ verify condition e x = if condition then Right x else Left e
 
 text2Lbs :: T.Text -> L.ByteString
 text2Lbs = L.fromStrict . TE.encodeUtf8
+
+text2bs :: T.Text -> S.ByteString
+text2bs = TE.encodeUtf8
 
 base64bs :: Base64 -> S.ByteString
 base64bs (Base64 b64 _) = strict . B64.encode $ b64
