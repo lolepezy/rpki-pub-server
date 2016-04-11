@@ -5,11 +5,10 @@ import           Control.Exception          (bracket)
 import           Control.Monad              (msum)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.ByteString.Lazy.Char8 as L
-import           Happstack.Server           (ServerPart, ToMessage,
-                                             asContentType, askRq, badRequest, queryString,
-                                             dir, look, method, notFound, ok,
-                                             path, serveFile, setHeaderM,
-                                             simpleHTTP, toResponse)
+import           Happstack.Server           (ServerPart, asContentType, askRq,
+                                             badRequest, dir, look, method, ok,
+                                             path, queryString, serveFile,
+                                             setHeaderM, simpleHTTP, toResponse)
 import           Happstack.Server.Types
 
 import           Data.Acid                  (openLocalState)
@@ -18,6 +17,7 @@ import           Options
 
 import           Config
 import           RRDP.Repo
+import qualified RRDP.XML                   as XS
 import qualified Store                      as ST
 import           Types
 
@@ -60,13 +60,15 @@ processMessageAcid appState = do
     cId  <- optional $ queryString $ look "clientId"
     case (bod, cId) of
       (Just rqbody, Just cid) -> respond (ClientId cid) rqbody
-      (_, Nothing)            -> mkResp badRequest $ L.pack "No clientId provided"
-      (Nothing, _)            -> mkResp badRequest $ L.pack "Request has no body"
+      (_, Nothing)            -> badRequest `mkR` L.pack "No clientId provided"
+      (Nothing, _)            -> badRequest `mkR` L.pack "Request has no body"
     where
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
         m <- liftIO $ processMessage appState clientId $ unBody rqbody
-        mkResp ok $ snd m
+        ok `mkR` XS.createReply (snd m)
+
+      mkR resp output = resp $ toResponse output
 
 
 rpkiContentType, rrdpContentType :: ServerPart a -> ServerPart a
@@ -74,6 +76,3 @@ rpkiContentType response = setHeaderM "Content-Type" "text/xml" >> response
 
 -- TODO Set the proper content type for XML files we serve
 rrdpContentType response = setHeaderM "Content-Type" "text/xml" >> response
-
-mkResp :: ToMessage a => (Response -> t) -> a -> t
-mkResp resp output = resp $ toResponse output

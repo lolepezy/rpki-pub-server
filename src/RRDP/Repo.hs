@@ -97,25 +97,25 @@ initialAppState appConf acid = do
   TODO Adjust it to the latest standard version
   TODO Add proper logging
 -}
-processMessage :: AppState -> ClientId -> L.ByteString -> IO (AppState, L.ByteString)
+processMessage :: AppState -> ClientId -> L.ByteString -> IO (AppState, Reply)
 processMessage appState clientId queryXml =
   case XS.parseMessage queryXml of
-    Left e                    -> return (appState, XS.createReply $ Errors [XMLError e])
+    Left e                    -> return (appState, Errors [XMLError e])
     Right ListMessage         -> listObjects appState clientId
     Right (PduMessage _ pdus) -> applyActionsToState appState clientId pdus
 
 
-listObjects :: AppState -> ClientId -> IO (AppState, L.ByteString)
-listObjects appState clientId = return (appState, "")
+listObjects :: AppState -> ClientId -> IO (AppState, Reply)
+listObjects appState clientId = return (appState, ListReply [])
 
-applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, L.ByteString)
+applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, Reply)
 applyActionsToState appState @ AppState {
     currentState = (tRepoMap, changeLog),
     acidRepo = repo,
     changeSync = chSync }
     clientId pdus = do
   actions <- applyToState `catch` rollbackActions
-  return (appState, XS.createReply $ reply actions)
+  return (appState, reply actions)
   where
     applyToState = AS.atomically $ do
       actions <- AS.liftAdv $ tActionSeq clientId pdus tRepoMap
