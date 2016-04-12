@@ -1,44 +1,45 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
+{-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TupleSections      #-}
 
 module RRDP.Repo where
 
 import           Control.Concurrent
-import qualified Control.Concurrent.AdvSTM    as AS
-import           Control.Concurrent.STM       as S
-import           Control.Concurrent.STM.TMVar (TMVar, takeTMVar, tryPutTMVar)
+import qualified Control.Concurrent.AdvSTM  as AS
+import           Control.Concurrent.STM     as S
 import           Control.Exception.Base
 import           Control.Monad
-import           Data.Data                    (Typeable)
+import           Data.Data                  (Typeable)
 import           Data.Foldable
-import           Data.Function                (on)
-import           Data.List                    (sortBy)
+import           Data.Function              (on)
+import           Data.List                  (sortBy)
 import           Data.Maybe
 import           Data.Time.Clock
-import qualified ListT                        as LT
+import qualified ListT                      as LT
 import           Network.URI
-import qualified STMContainers.Map            as TMap
+import qualified STMContainers.Map          as TMap
+import qualified STMContainers.Multimap     as TMMap
 
-import qualified Data.Dequeue                 as DQ
+import qualified Data.Dequeue               as DQ
 
-import qualified Data.ByteString.Lazy.Char8   as L
-import qualified Data.Text                    as T
+import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.Text                  as T
 
 import           Data.Acid
-import           Data.Acid.Advanced           (query', update')
+import           Data.Acid.Advanced         (query', update')
 
-import           Data.UUID.V4                 (nextRandom)
+import           Data.UUID.V4               (nextRandom)
 
 import           System.Directory
 import           System.FilePath
 import           System.IO.Error
 
 import           Config
-import qualified RRDP.XML                     as XS
-import qualified Store                        as ST
+import qualified RRDP.XML                   as XS
+import qualified Store                      as ST
 import           Types
-import qualified Util                         as U
+import qualified Util                       as U
 
 
 type RRDPValue r = Either RRDPError r
@@ -49,8 +50,14 @@ type ChangeSet = [QueryPdu]
 
 type RepoState  = [(URI, (Base64, ClientId))]
 type TRepoMap   = TMap.Map URI (Base64, ClientId)
+type TClientMap = TMMap.Multimap ClientId URI
 type TChangeLog = (TMap.Map Integer ChangeSet, TVar Integer)
-type TRepoState = (TRepoMap, TChangeLog)
+
+data TRepoState = TRepoState {
+  rMap      :: TRepoMap,
+  cMap      :: TClientMap,
+  changeLog :: TChangeLog
+}
 
 data AppState = AppState {
   currentState :: TRepoState,
@@ -63,17 +70,35 @@ data RollbackException = RollbackException [Action] deriving (Typeable, Show)
 
 instance Exception RollbackException
 
+tInsert :: TRepoState -> Base64 -> ClientId -> URI -> STM ()
+tInsert TRepoState{..} base64 clientId uri = do
+  TMap.insert (base64, clientId) uri rMap
+  TMMap.insert uri clientId cMap
+
+tDelete :: TRepoState -> ClientId -> URI -> STM ()
+tDelete TRepoState{..} clientId uri = do
+  TMap.delete uri rMap
+  TMMap.delete uri clientId cMap
+
+
 initialTRepo :: [ST.RepoObject] -> STM TRepoState
 initialTRepo repoObjects = do
-  tmap    <- stmMapFromList repoObjects
+  rmap    <- tMap repoObjects
+  cmap    <- cMap repoObjects
   logMap  <- TMap.new
   counter <- newTVar 0
-  return (tmap, (logMap, counter))
+  return TRepoState { rMap = rmap, cMap = cmap, changeLog = (logMap, counter) }
   where
-    stmMapFromList list = do
+    tMap list = do
       m <- TMap.new
-      _ <- sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
+      void $ sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
       return m
+
+    cMap list = do
+      m <- TMMap.new
+      void $ sequence_ [ TMMap.insert u cId m | ST.RepoObject cId u _ <- list ]
+      return m
+
 
 initialAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
 initialAppState appConf acid = do
@@ -92,7 +117,6 @@ initialAppState appConf acid = do
 
 
 {-
-  TODO Implement <list> requests
   TODO Support tag attribute in PDUs
   TODO Adjust it to the latest standard version
   TODO Add proper logging
@@ -106,11 +130,15 @@ processMessage appState clientId queryXml =
 
 
 listObjects :: AppState -> ClientId -> IO (AppState, Reply)
-listObjects appState clientId = return (appState, ListReply [])
+listObjects a @ AppState { currentState = TRepoState{..} } clientId = atomically $ do
+  uris <- LT.toList $ TMMap.streamByKey clientId cMap
+  objs <- sequence [ (u,) <$> TMap.lookup u rMap | u <- uris ]
+  return (a, ListReply [ ListPdu u h | (u, Just (Base64 _ h, _)) <- objs ]);
+
 
 applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, Reply)
 applyActionsToState appState @ AppState {
-    currentState = (tRepoMap, changeLog),
+    currentState = repoState @ TRepoState{..},
     acidRepo = repo,
     changeSync = chSync }
     clientId pdus = do
@@ -118,7 +146,7 @@ applyActionsToState appState @ AppState {
   return (appState, reply actions)
   where
     applyToState = AS.atomically $ do
-      actions <- AS.liftAdv $ tActionSeq clientId pdus tRepoMap
+      actions <- AS.liftAdv $ tActionSeq clientId pdus repoState
       let errors = [ e | Wrong_ e <- actions ]
       if null errors then do
         AS.liftAdv $ do
@@ -140,8 +168,9 @@ applyActionsToState appState @ AppState {
 
     notifySnapshotWritingThread = tryPutTMVar chSync
 
-    reply []      = Success
-    reply actions = Errors [ e | Wrong_ e <- actions ]
+    reply actions = case [ e | Wrong_ e <- actions ] of
+      [] -> Success
+      as -> Errors as
 
 
 stateSnapshot :: TRepoMap -> STM RepoState
@@ -157,8 +186,8 @@ changeLogSnapshot (chLog, _) = do
   Create actions only until the first error to avoid
   redundant STM modify/rollback overhead.
  -}
-tActionSeq :: ClientId -> [QueryPdu] -> TRepoMap -> STM [Action]
-tActionSeq clientId pdus tReposState = go pdus
+tActionSeq :: ClientId -> [QueryPdu] -> TRepoState -> STM [Action]
+tActionSeq clientId pdus repoState @ TRepoState{..} = go pdus
  where
   go :: [QueryPdu] -> STM [Action]
   go [] = return []
@@ -170,8 +199,8 @@ tActionSeq clientId pdus tReposState = go pdus
 
 
   applyActionToMap :: Action -> STM Action
-  applyActionToMap a@(AddOrUpdate_ (uri, base64)) = const a <$> TMap.insert (base64, clientId) uri tReposState
-  applyActionToMap a@(Delete_ uri)                = const a <$> TMap.delete uri tReposState
+  applyActionToMap a@(AddOrUpdate_ (uri, base64)) = const a <$> tInsert repoState base64 clientId uri
+  applyActionToMap a@(Delete_ uri)                = const a <$> tDelete repoState clientId uri
   applyActionToMap a                              = return a
 
   makeAction :: QueryPdu -> STM Action
@@ -186,7 +215,7 @@ tActionSeq clientId pdus tReposState = go pdus
          | otherwise = Wrong_ $ NoObjectMatchingHash storedHash p
 
      lookupObject :: URI -> STM (Maybe (Base64, ClientId))
-     lookupObject u = TMap.lookup u tReposState
+     lookupObject u = TMap.lookup u rMap
      in
      case p of
        QP (Publish uri base64 Nothing) -> do
@@ -210,7 +239,7 @@ tActionSeq clientId pdus tReposState = go pdus
 
 rrdpSyncThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
 rrdpSyncThread syncChan AppState {
-    currentState  = (tRepoMap, tChangeLog),
+    currentState  = TRepoState{..},
     appConfig     = AppConfig { snapshotSyncPeriodOpt = syncPeriod },
     changeSync    = chSync
     } = do
@@ -240,11 +269,11 @@ rrdpSyncThread syncChan AppState {
 
       doSyncAndWaitAgain newTime = do
         atomically $ do
-          lastState <- stateSnapshot tRepoMap
-          changeLog <- changeLogSnapshot tChangeLog
-          let (chMap, _) = tChangeLog
-          mapM_ ((`TMap.delete` chMap) . fst) changeLog
-          writeTChan syncChan (lastState, concatMap snd changeLog)
+          lastState <- stateSnapshot rMap
+          clog      <- changeLogSnapshot changeLog
+          let (chMap, _) = changeLog
+          mapM_ ((`TMap.delete` chMap) . fst) clog
+          writeTChan syncChan (lastState, concatMap snd clog)
         waitAndProcess newTime
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime

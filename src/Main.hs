@@ -16,7 +16,7 @@ import           Data.Acid.Local            (createCheckpointAndClose)
 import           Options
 
 import           Config
-import           RRDP.Repo
+import qualified RRDP.Repo                  as R
 import qualified RRDP.XML                   as XS
 import qualified Store                      as ST
 import           Types
@@ -28,7 +28,7 @@ setupWebAppAcid :: AppConfig -> IO ()
 setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
-      appState <- initialAppState appConf acid
+      appState <- R.initialAppState appConf acid
       simpleHTTP nullConf { port = pPort } $ msum [
           dir "message" $ method POST >>
              rpkiContentType (processMessageAcid appState),
@@ -53,7 +53,7 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
       serveFile (asContentType "application/rpki-publication") $ p ++ name
 
 
-processMessageAcid :: AppState -> ServerPart Response
+processMessageAcid :: R.AppState -> ServerPart Response
 processMessageAcid appState = do
     req  <- askRq
     bod <- liftIO $ takeRequestBody req
@@ -65,7 +65,7 @@ processMessageAcid appState = do
     where
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
-        m <- liftIO $ processMessage appState clientId $ unBody rqbody
+        m <- liftIO $ R.processMessage appState clientId $ unBody rqbody
         ok `mkR` XS.createReply (snd m)
 
       mkR resp output = resp $ toResponse output

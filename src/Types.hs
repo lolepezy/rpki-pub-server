@@ -2,8 +2,10 @@
 {-# LANGUAGE TemplateHaskell    #-}
 module Types where
 
+import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import           Data.Data                  (Data, Typeable)
+import           Data.Hashable
 import           Data.SafeCopy              (base, deriveSafeCopy)
 import qualified Data.Text                  as T
 import           Network.URI
@@ -97,6 +99,12 @@ data ObjOperation a u d w = AddOrUpdate_ u | Delete_ d | Wrong_ w | List_ Client
   deriving (Eq, Show, Typeable, Data)
 
 type Action = ObjOperation (URI, Base64) (URI, Base64) URI RepoError
+
+instance Hashable URI where
+  hashWithSalt salt u = hashWithSalt salt (S.pack $ show u :: S.ByteString)
+
+instance Hashable ClientId where
+  hashWithSalt s (ClientId ss) = s `hashWithSalt` ss
 
 $(deriveSafeCopy 0 'base ''Hash)
 $(deriveSafeCopy 0 'base ''Serial)

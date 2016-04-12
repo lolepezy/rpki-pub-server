@@ -161,7 +161,7 @@ createReply reply = XF.formatNode $
   mkElem "msg" [("version", BS.pack protocolVersion), ("type", BS.pack "reply")] $ formatReply reply
   where
     formatReply :: Reply -> [ Elem BS.ByteString ]
-    formatReply Success = [ mkElem "success" [] []]
+    formatReply Success = [ mkElem "success" [] [] ]
     formatReply (ListReply listPdus) = map (\(ListPdu uri (Hash hash)) ->
         mkElem "list" [("uri", BS.pack $ show uri), ("hash", U.strict hash)] []
       ) listPdus

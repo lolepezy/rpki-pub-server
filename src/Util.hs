@@ -1,17 +1,14 @@
 module Util where
 
-import qualified Data.ByteString.Char8  as S
-import qualified Data.ByteString.Lazy.Char8  as L
+import qualified Crypto.Hash.SHA256          as SHA256
+import qualified Data.ByteString.Base16      as B16
 import qualified Data.ByteString.Base64.Lazy as B64
-import qualified Data.ByteString.Base16 as B16
-import           Data.Hashable
-import Data.UUID
-import qualified Crypto.Hash.SHA256 as SHA256
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import           Network.URI (URI)
-
-import Types
+import qualified Data.ByteString.Char8       as S
+import qualified Data.ByteString.Lazy.Char8  as L
+import qualified Data.Text                   as T
+import qualified Data.Text.Encoding          as TE
+import           Data.UUID
+import           Types
 
 nextS :: Serial -> Serial
 nextS (Serial s) = Serial $ s + 1
@@ -72,6 +69,3 @@ instance BString S.ByteString where
   pack = S.pack
   text = TE.encodeUtf8
   length = toInteger . S.length
-
-instance Hashable URI where
-  hashWithSalt salt u = hashWithSalt salt (S.pack $ show u :: S.ByteString)
