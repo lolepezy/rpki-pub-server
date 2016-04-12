@@ -83,21 +83,14 @@ tDelete TRepoState{..} clientId uri = do
 
 initialTRepo :: [ST.RepoObject] -> STM TRepoState
 initialTRepo repoObjects = do
-  rmap    <- tMap repoObjects
-  cmap    <- cMap repoObjects
+  (rmap, cmap) <- (,) <$> TMap.new <*> TMMap.new
+  mapM_ (\(ST.RepoObject cId u b64) -> do
+    TMap.insert (b64, cId) u rmap
+    TMMap.insert u cId cmap) repoObjects
+
   logMap  <- TMap.new
   counter <- newTVar 0
   return TRepoState { rMap = rmap, cMap = cmap, changeLog = (logMap, counter) }
-  where
-    tMap list = do
-      m <- TMap.new
-      void $ sequence_ [ TMap.insert (b64, cId) u m | ST.RepoObject cId u b64 <- list ]
-      return m
-
-    cMap list = do
-      m <- TMMap.new
-      void $ sequence_ [ TMMap.insert u cId m | ST.RepoObject cId u _ <- list ]
-      return m
 
 
 initialAppState :: AppConfig -> AcidState ST.Repo -> IO AppState
@@ -118,7 +111,6 @@ initialAppState appConf acid = do
 
 {-
   TODO Support tag attribute in PDUs
-  TODO Adjust it to the latest standard version
   TODO Add proper logging
 -}
 processMessage :: AppState -> ClientId -> L.ByteString -> IO (AppState, Reply)
