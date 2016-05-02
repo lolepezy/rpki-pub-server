@@ -124,8 +124,8 @@ processMessage appState clientId queryXml =
 listObjects :: AppState -> ClientId -> IO (AppState, Reply)
 listObjects a @ AppState { currentState = TRepoState{..} } clientId = atomically $ do
   uris <- LT.toList $ TMMap.streamByKey clientId cMap
-  objs <- sequence [ (u,) <$> TMap.lookup u rMap | u <- uris ]
-  return (a, ListReply [ ListPdu u h | (u, Just (Base64 _ h, _)) <- objs ]);
+  objs <- mapM (\u -> (u,) <$> TMap.lookup u rMap) uris
+  return (a, ListReply [ ListPdu u h | (u, Just (Base64 _ h, _)) <- objs ])
 
 
 applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, Reply)
@@ -139,14 +139,14 @@ applyActionsToState appState @ AppState {
   where
     applyToState = AS.atomically $ do
       actions <- AS.liftAdv $ tActionSeq clientId pdus repoState
-      let errors = [ e | Wrong_ e <- actions ]
-      if null errors then do
-        AS.liftAdv $ do
-          updateChangeLog changeLog
-          void $ notifySnapshotWritingThread pdus
-        AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
-      else
-        AS.liftAdv $ throwSTM $ RollbackException actions
+      case [ e | Wrong_ e <- actions ] of
+        [] -> do
+          AS.liftAdv $ do
+            updateChangeLog changeLog
+            void $ notifySnapshotWritingThread pdus
+          AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
+        _ ->
+          AS.liftAdv $ throwSTM $ RollbackException actions
 
       return actions
 
@@ -210,19 +210,19 @@ tActionSeq clientId pdus repoState @ TRepoState{..} = go pdus
      lookupObject u = TMap.lookup u rMap
      in
      case p of
-       QP (Publish uri base64 Nothing) -> do
+       QP (Publish uri base64 Nothing _) -> do
          o <- lookupObject uri
          return $ case o of
            Nothing -> AddOrUpdate_ (uri, base64)
            Just _  -> Wrong_ $ ObjectAlreadyPresent p
 
-       QP (Publish uri base64 (Just hash)) -> do
+       QP (Publish uri base64 (Just hash) _) -> do
          o <- lookupObject uri
          return $ case o of
            Nothing -> Wrong_ $ NoObjectPresent uri hash
            Just (Base64 _ h, cId) -> withClientIdCheck uri cId $ withHashCheck hash h $ AddOrUpdate_ (uri, base64)
 
-       QW (Withdraw uri hash) -> do
+       QW (Withdraw uri hash _) -> do
          o <- lookupObject uri
          return $ case o of
            Nothing -> Wrong_ $ NoObjectPresent uri hash
@@ -424,6 +424,6 @@ serializeDelta :: Delta -> L.ByteString
 serializeDelta (Delta deltaDef pdus) = U.lazy $ XS.format $ XS.deltaElem deltaDef elements
   where
     elements  = [ case pdu of
-                    QP (Publish u b64 mHash) -> XS.publishElem u b64 mHash
-                    QW (Withdraw u hash)     -> XS.withdrawElem u hash
+                    QP (Publish u b64 mHash _) -> XS.publishElem u b64 mHash
+                    QW (Withdraw u hash _)     -> XS.withdrawElem u hash
                 | pdu <- pdus ]

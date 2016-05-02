@@ -50,7 +50,7 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
   where
     serveXml :: AppConfig -> String -> ServerPart Response
     serveXml AppConfig { repositoryPathOpt = p } name =
-      serveFile (asContentType "application/rpki-publication") $ p ++ name
+      serveFile (asContentType "text/xml") $ p ++ name
 
 
 processMessageAcid :: R.AppState -> ServerPart Response

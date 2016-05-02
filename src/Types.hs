@@ -13,6 +13,7 @@ import           Network.URI
 newtype Serial = Serial Integer deriving (Show, Eq, Ord, Typeable, Data)
 newtype SessionId = SessionId T.Text deriving (Show, Eq, Ord, Typeable, Data)
 newtype Version = Version Int deriving (Show, Eq, Ord, Typeable, Data)
+newtype Tag = Tag String deriving (Show, Eq, Ord, Typeable, Data)
 
 newtype Hash = Hash L.ByteString deriving (Show, Eq, Ord, Typeable, Data)
 newtype ClientId = ClientId String deriving (Show, Eq, Ord, Typeable, Data)
@@ -39,10 +40,10 @@ type Message = QMessage QueryPdu
 data QMessage pdu = PduMessage !Version [pdu] | ListMessage
   deriving (Show, Eq)
 
-data Publish = Publish !URI !Base64 !(Maybe Hash)
+data Publish = Publish !URI !Base64 !(Maybe Hash) !Tag
   deriving (Show, Eq, Ord, Typeable, Data)
 
-data Withdraw = Withdraw !URI !Hash
+data Withdraw = Withdraw !URI !Hash !Tag
   deriving (Show, Eq, Ord, Typeable, Data)
 
 data QueryPdu = QP Publish | QW Withdraw
@@ -65,6 +66,7 @@ data ParseError = BadXml !T.Text
               | NoPdus
               | ListWithPdus
               | NoURI
+              | NoTag
               | NoSerial
               | NoHash
               | NoVersion
@@ -108,6 +110,7 @@ instance Hashable ClientId where
 
 $(deriveSafeCopy 0 'base ''Hash)
 $(deriveSafeCopy 0 'base ''Serial)
+$(deriveSafeCopy 0 'base ''Tag)
 $(deriveSafeCopy 0 'base ''Version)
 $(deriveSafeCopy 0 'base ''SessionId)
 $(deriveSafeCopy 0 'base ''Base64)
