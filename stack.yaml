@@ -1,0 +1,12 @@
+flags: {}
+extra-package-dbs: []
+packages:
+- '.'
+extra-deps:
+- cpphs-1.20.1
+- dequeue-0.1.12
+- hashable-1.2.3.3
+- stm-io-hooks-1.1.0
+- text-1.2.2.0
+- unagi-chan-0.4.0.0
+resolver: lts-5.15
