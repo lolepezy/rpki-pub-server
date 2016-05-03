@@ -5,8 +5,8 @@ import qualified Data.ByteString.Base16      as B16
 import qualified Data.ByteString.Base64.Lazy as B64
 import qualified Data.ByteString.Char8       as S
 import qualified Data.ByteString.Lazy.Char8  as L
+import qualified Data.String.Conversions     as SC
 import qualified Data.Text                   as T
-import qualified Data.Text.Encoding          as TE
 import           Data.UUID
 import           Types
 
@@ -37,35 +37,20 @@ maybeInteger s = case reads s of
 verify :: Bool -> e -> x -> Either e x
 verify condition e x = if condition then Right x else Left e
 
-text2Lbs :: T.Text -> L.ByteString
-text2Lbs = L.fromStrict . TE.encodeUtf8
-
-text2bs :: T.Text -> S.ByteString
-text2bs = TE.encodeUtf8
-
 base64bs :: Base64 -> S.ByteString
-base64bs (Base64 b64 _) = strict . B64.encode $ b64
+base64bs (Base64 b64 _) = cs . B64.encode $ b64
 
 uuid2SessionId :: UUID -> SessionId
 uuid2SessionId uuid = SessionId $ T.pack $ show uuid
 
-class BString s where
-  lazy :: s -> L.ByteString
-  strict :: s -> S.ByteString
-  pack :: String -> s
-  text :: T.Text -> s
-  length :: s -> Integer
+type SBS = SC.SBS
+type LBS = SC.LBS
 
-instance BString L.ByteString where
-  lazy = id
-  strict = S.concat . L.toChunks
-  pack = L.pack
-  text = L.fromStrict . TE.encodeUtf8
-  length = toInteger . L.length
+cs :: SC.ConvertibleStrings s1 s2 => s1 -> s2
+cs = SC.cs
 
-instance BString S.ByteString where
-  lazy = L.fromStrict
-  strict = id
-  pack = S.pack
-  text = TE.encodeUtf8
-  length = toInteger . S.length
+lbslen :: LBS -> Integer
+lbslen = toInteger . L.length
+
+sbslen :: SBS -> Integer
+sbslen = toInteger . S.length

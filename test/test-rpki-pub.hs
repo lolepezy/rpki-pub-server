@@ -9,7 +9,7 @@ import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Util as U
 
 import Types
-import RRDP.Repo
+import Repo
 
 sessionId :: SessionId
 sessionId = SessionId "c2cc10e1-57d6-4b6f-9899-38d972112d8c"

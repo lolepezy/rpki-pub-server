@@ -3,7 +3,7 @@
 {-# LANGUAGE RecordWildCards    #-}
 {-# LANGUAGE TupleSections      #-}
 
-module RRDP.Repo where
+module Repo where
 
 import           Control.Concurrent
 import qualified Control.Concurrent.AdvSTM  as AS
@@ -36,7 +36,7 @@ import           System.FilePath
 import           System.IO.Error
 
 import           Config
-import qualified RRDP.XML                   as XS
+import qualified XML                   as XS
 import qualified Store                      as ST
 import           Types
 import qualified Util                       as U
@@ -309,10 +309,10 @@ syncFSThread syncChan appState @ AppState {
       (lastState, pdus) <- atomically $ readTChan syncChan
 
       let snapshotXml = serializeSnapshot lastState $ SnapshotDef (Version 3) sessionId serial
-          (snapshotSize, snapshotHash) = (U.length snapshotXml, U.getHash snapshotXml)
+          (snapshotSize, snapshotHash) = (U.lbslen snapshotXml, U.getHash snapshotXml)
 
           deltaXml = serializeDelta $ Delta (DeltaDef (Version 3) sessionId serial) pdus
-          (deltaSize, deltaHash) = (U.length deltaXml, U.getHash deltaXml)
+          (deltaSize, deltaHash) = (U.lbslen deltaXml, U.getHash deltaXml)
 
           updated :: SyncFSData -> (SyncFSData, [Serial])
           updated (SyncFSData dts totalSize) =
@@ -399,9 +399,9 @@ syncToFS (sessionId @ (SessionId sId), Serial s)
 
 
 
-serializeNotification :: (SessionId, Serial) -> String -> Hash -> DeltaDequeue -> L.ByteString
+serializeNotification :: (SessionId, Serial) -> String -> Hash -> DeltaDequeue -> U.LBS
 serializeNotification (SessionId sId, Serial serial) _repoUrlBase snapshotHash deltas =
-  U.lazy $ XS.format $ XS.notificationElem sd $ snapshotElem ++ deltaElems
+  U.cs $ XS.format $ XS.notificationElem sd $ snapshotElem ++ deltaElems
   where
     sd = SnapshotDef (Version 3) (SessionId sId) (Serial serial)
     snapshotElem = [ snapshotDefElem sUri snapshotHash | sUri <- maybeToList $ snapshotUri serial ]
@@ -410,18 +410,18 @@ serializeNotification (SessionId sId, Serial serial) _repoUrlBase snapshotHash d
     snapshotUri s = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/snapshot.xml"
     deltaUri s    = parseURI $ _repoUrlBase ++ "/" ++ T.unpack sId ++ "/" ++ show s ++ "/delta.xml"
 
-    snapshotDefElem uri (Hash hash) = XS.mkElem "snapshot" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
-    deltaDefElem uri (Hash hash) s  = XS.mkElem "delta"    [("uri", U.pack $ show uri), ("hash", U.strict hash), ("serial", U.pack $ show s)] []
+    snapshotDefElem uri (Hash hash) = XS.mkElem "snapshot" [("uri", U.cs $ show uri), ("hash", U.cs hash)] []
+    deltaDefElem uri (Hash hash) s  = XS.mkElem "delta"    [("uri", U.cs $ show uri), ("hash", U.cs hash), ("serial", U.cs $ show s)] []
 
 
 serializeSnapshot :: RepoState -> SnapshotDef -> L.ByteString
-serializeSnapshot ros snapshotDef = U.lazy $ XS.format $ XS.snapshotElem snapshotDef publishElements
+serializeSnapshot ros snapshotDef = U.cs $ XS.format $ XS.snapshotElem snapshotDef publishElements
   where
     publishElements = [ XS.publishElem u b64 Nothing | (u, (b64, _)) <- ros ]
 
 
 serializeDelta :: Delta -> L.ByteString
-serializeDelta (Delta deltaDef pdus) = U.lazy $ XS.format $ XS.deltaElem deltaDef elements
+serializeDelta (Delta deltaDef pdus) = U.cs $ XS.format $ XS.deltaElem deltaDef elements
   where
     elements  = [ case pdu of
                     QP (Publish u b64 mHash _) -> XS.publishElem u b64 mHash

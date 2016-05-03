@@ -16,8 +16,8 @@ import           Data.Acid.Local            (createCheckpointAndClose)
 import           Options
 
 import           Config
-import qualified RRDP.Repo                  as R
-import qualified RRDP.XML                   as XS
+import qualified Repo                  as R
+import qualified XML                   as XS
 import qualified Store                      as ST
 import           Types
 

@@ -3,7 +3,7 @@
 {-# LANGUAGE RankNTypes        #-}
 {-# LANGUAGE RecordWildCards   #-}
 {-# LANGUAGE TupleSections     #-}
-module RRDP.XML where
+module XML where
 
 import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -82,8 +82,8 @@ parsePublish :: [(T.Text, T.Text)] -> T.Text -> Either ParseError Publish
 parsePublish attrs b64 = do
   uri    <- parseUri attrs
   tag    <- parseTag attrs
-  base64 <- U.mkBase64 $ U.text2Lbs b64
-  let hash  = Hash . U.text2Lbs <$> getAttr attrs "hash"
+  base64 <- U.mkBase64 $ U.cs b64
+  let hash  = Hash . U.cs <$> getAttr attrs "hash"
   return $ Publish uri base64 hash tag
 
 
@@ -92,7 +92,7 @@ parseWithdraw attrs  = do
   uri  <- parseUri attrs
   tag  <- parseTag attrs
   hash <- U.maybeToEither NoHash $ getAttr attrs "hash"
-  return $ Withdraw uri (Hash (U.text2Lbs hash)) tag
+  return $ Withdraw uri (Hash (U.cs hash)) tag
 
 
 parseGeneric :: LBS.ByteString ->
@@ -123,47 +123,47 @@ verifyXmlNs :: T.Text -> Either ParseError ()
 verifyXmlNs xmlNs = U.verify ("HTTP://www.ripe.net/rpki/rrdp" == xmlNs) (BadXmlNs xmlNs) ()
 
 
-type Elem s = XT.Node String s
+type Elem = XT.Node String U.SBS
 
-mkElem :: U.BString s => String -> [(String, s)] -> [Elem s] -> Elem s
+mkElem :: String -> [(String, U.SBS)] -> [Elem] -> Elem
 mkElem = XT.Element
 
-pduElem :: QueryPdu -> Elem BS.ByteString
+pduElem :: QueryPdu -> Elem
 pduElem (QP (Publish u b64 mHash tag)) = publishElemWTag u b64 mHash tag
 pduElem (QW (Withdraw u hash tag))     = withdrawElemWTag u hash tag
 
-publishElemWTag :: URI -> Base64 -> Maybe Hash -> Tag -> Elem BS.ByteString
+publishElemWTag :: URI -> Base64 -> Maybe Hash -> Tag -> Elem
 publishElemWTag uri base64 mHash (Tag t) = mkElem "publish"
-  ([("uri", U.pack $ show uri), ("tag", BS.pack t)] ++ [("hash", U.strict h) | Hash h <- maybeToList mHash])
+  ([("uri", U.cs $ show uri), ("tag", U.cs t)] ++ [("hash", U.cs h) | Hash h <- maybeToList mHash])
   [XT.Text $ U.base64bs base64]
 
-publishElem :: URI -> Base64 -> Maybe Hash -> Elem BS.ByteString
+publishElem :: URI -> Base64 -> Maybe Hash -> Elem
 publishElem uri base64 mHash = mkElem "publish"
-  (("uri", U.pack $ show uri) : [("hash", U.strict h) | Hash h <- maybeToList mHash])
+  (("uri", U.cs $ show uri) : [("hash", U.cs h) | Hash h <- maybeToList mHash])
   [XT.Text $ U.base64bs base64]
 
 
-withdrawElemWTag :: URI -> Hash -> Tag -> Elem BS.ByteString
-withdrawElemWTag uri (Hash hash) (Tag t) = mkElem "withdraw" [("uri", U.pack $ show uri), ("hash", U.strict hash), ("tag", BS.pack t)] []
+withdrawElemWTag :: URI -> Hash -> Tag -> Elem
+withdrawElemWTag uri (Hash hash) (Tag t) = mkElem "withdraw" [("uri", U.cs $ show uri), ("hash", U.cs hash), ("tag", BS.pack t)] []
 
-withdrawElem :: URI -> Hash -> Elem BS.ByteString
-withdrawElem uri (Hash hash) = mkElem "withdraw" [("uri", U.pack $ show uri), ("hash", U.strict hash)] []
+withdrawElem :: URI -> Hash -> Elem
+withdrawElem uri (Hash hash) = mkElem "withdraw" [("uri", U.cs $ show uri), ("hash", U.cs hash)] []
 
-snapshotElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s
+snapshotElem :: SnapshotDef -> [Elem] -> Elem
 snapshotElem (SnapshotDef version sId serial) = commonElem version sId serial "snapshot"
 
-deltaElem :: U.BString s => DeltaDef -> [Elem s] -> Elem s
+deltaElem :: DeltaDef -> [Elem] -> Elem
 deltaElem (DeltaDef version sId serial) = commonElem version sId serial "delta"
 
-notificationElem :: U.BString s => SnapshotDef -> [Elem s] -> Elem s
+notificationElem :: SnapshotDef -> [Elem] -> Elem
 notificationElem (SnapshotDef version sId serial) = commonElem version sId serial "notification"
 
-commonElem :: U.BString s => Version -> SessionId -> Serial -> String -> [XT.Node String s] -> XT.Node String s
+commonElem :: Version -> SessionId -> Serial -> String -> [XT.Node String U.SBS] -> XT.Node String U.SBS
 commonElem (Version version) (SessionId uuid) (Serial serial) elemName = mkElem elemName [
-    ("xmlns", U.pack "http://www.ripe.net/rpki/rrdp"),
-    ("version", U.pack $ show version),
-    ("serial",  U.pack $ show serial),
-    ("session_id", U.text uuid)
+    ("xmlns", "http://www.ripe.net/rpki/rrdp"),
+    ("version", U.cs $ show version),
+    ("serial",  U.cs $ show serial),
+    ("session_id", U.cs uuid)
   ]
 
 
@@ -171,14 +171,14 @@ createReply :: Reply -> LBS.ByteString
 createReply reply = XF.formatNode $
   mkElem "msg" [("version", BS.pack protocolVersion), ("type", BS.pack "reply")] $ formatReply reply
   where
-    formatReply :: Reply -> [ Elem BS.ByteString ]
+    formatReply :: Reply -> [ Elem ]
     formatReply Success = [ mkElem "success" [] [] ]
     formatReply (ListReply listPdus) = map (\(ListPdu uri (Hash hash)) ->
-        mkElem "list" [("uri", BS.pack $ show uri), ("hash", U.strict hash)] []
+        mkElem "list" [("uri", BS.pack $ show uri), ("hash", U.cs hash)] []
       ) listPdus
     formatReply (Errors errors) = map reportError errors
 
-    reportError :: RepoError -> Elem BS.ByteString
+    reportError :: RepoError -> Elem
     reportError (XMLError parseError)  = errorElem "xml_error"          [ textElem $ BS.pack $ show parseError ]
     reportError PermissionFailure{..}  = errorElem "permission_failure" [XT.Text $ BS.pack message]
       where message = "Cannot update object " ++ show oUri ++
@@ -193,12 +193,12 @@ createReply reply = XF.formatNode $
     reportError (NoObjectMatchingHash (Hash hash) pdu) = errorElem "no_object_matching_hash" [ textElem $ BS.pack message, pduE pdu ]
       where message = "Object in the <publish> element doesn't have hash " ++ show hash
 
-    reportError (ConsistencyProblem text) = errorElem "consistency_problem" [ textElem $ U.text2bs text ]
-    reportError (OtherError text)         = errorElem "other_error"        [ textElem $ U.text2bs text ]
+    reportError (ConsistencyProblem text) = errorElem "consistency_problem" [ textElem $ U.cs text ]
+    reportError (OtherError text)         = errorElem "other_error"        [ textElem $ U.cs text ]
 
     pduE p = mkElem "failed_pdu" [] [pduElem p]
     errorElem code = mkElem "report_error" [("error_code", code)]
     textElem message = mkElem "error_text" [] [XT.Text message]
 
-format :: Elem BS.ByteString -> LBS.ByteString
+format :: Elem -> U.LBS
 format = XF.formatNode

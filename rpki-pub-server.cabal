@@ -64,6 +64,7 @@ executable rpki-pub-server
                     ,async
                     ,stm-stats
                     ,fast-logger
+                    ,string-conversions
 
 
   default-language:    Haskell2010
