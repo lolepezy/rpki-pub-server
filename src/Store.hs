@@ -5,17 +5,17 @@
 
 module Store where
 
-import           Control.Monad.Reader      (ask)
-import           Control.Monad.State       (get, put)
-import           Data.Maybe
-import           Data.Set                  (fromList, member)
+import           Control.Monad.Reader (ask)
+import           Control.Monad.State  (get, put)
+import           Data.Set             (fromList, member)
 
-import           Data.Acid                 (Query, Update, makeAcidic)
-import           Data.Data                 (Data, Typeable)
-import           Data.IxSet                (Indexable, IxSet, empty, ixGen,
-                                            ixSet, toList, (@+), (@=))
-import qualified Data.IxSet                as IX
-import           Data.SafeCopy             (base, deriveSafeCopy)
+import           Data.Acid            (AcidState, Query, Update, makeAcidic)
+import           Data.Acid.Advanced   (query')
+import           Data.Data            (Data, Typeable)
+import           Data.IxSet           (Indexable, IxSet, empty, ixGen, ixSet,
+                                       toList)
+import qualified Data.IxSet           as IX
+import           Data.SafeCopy        (base, deriveSafeCopy)
 
 import           Network.URI
 import           Types
@@ -37,34 +37,12 @@ data Repo = Repo {
 
 $(deriveSafeCopy 0 'base ''Repo)
 
-getByClientId :: ClientId -> Query Repo [RepoObject]
-getByClientId = getByA
+type RepoState = AcidState Repo
 
-getByURI :: URI -> Query Repo (Maybe RepoObject)
-getByURI uri = do
-  o <- getByA uri
-  return $ listToMaybe o
-
-getByURIs :: [URI] -> Query Repo [RepoObject]
-getByURIs uris = do
-  Repo objs <- ask
-  return $ toList $ objs @+ uris
-
-getByA :: Typeable a => a -> Query Repo [RepoObject]
-getByA f = do
-  Repo objs <- ask
-  return $ toList $ objs @= f
-
-getAllObjects :: Query Repo [RepoObject]
-getAllObjects = do
-  Repo { objects = objs } <- ask
-  return $ toList objs
-
-getRepo :: Query Repo [(URI, RepoObject)]
-getRepo = do
-  Repo objs <- ask
-  return [ (u, o) | o @ (RepoObject _ u _) <- toList objs ]
-
+getAllObjects_ :: Query Repo [RepoObject]
+getAllObjects_ = do
+  Repo {..} <- ask
+  return $ toList objects
 
 applyActions :: ClientId -> [Action] -> Update Repo Repo
 applyActions cId actions = do
@@ -81,4 +59,8 @@ applyActions cId actions = do
 initialStore :: Repo
 initialStore = Repo IX.empty
 
-$(makeAcidic ''Repo [ 'getByURI, 'getByURIs, 'getAllObjects, 'getRepo, 'applyActions ])
+
+$(makeAcidic ''Repo [ 'getAllObjects_, 'applyActions ])
+
+getAllObjects :: AcidState Repo -> IO [RepoObject]
+getAllObjects acid = query' acid GetAllObjects_

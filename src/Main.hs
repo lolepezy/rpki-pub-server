@@ -16,10 +16,11 @@ import           Data.Acid.Local            (createCheckpointAndClose)
 import           Options
 
 import           Config
-import qualified Repo                  as R
-import qualified XML                   as XS
+import qualified Repo.Repo                  as R
+import qualified Repo.State                 as RS
 import qualified Store                      as ST
 import           Types
+import qualified XML                        as XS
 
 main :: IO ()
 main = runCommand $ \opts _ -> setupWebAppAcid opts
@@ -53,7 +54,7 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
       serveFile (asContentType "text/xml") $ p ++ name
 
 
-processMessageAcid :: R.AppState -> ServerPart Response
+processMessageAcid :: RS.AppState -> ServerPart Response
 processMessageAcid appState = do
     req  <- askRq
     bod <- liftIO $ takeRequestBody req
@@ -65,7 +66,7 @@ processMessageAcid appState = do
     where
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
-        m <- liftIO $ R.processMessage appState clientId $ unBody rqbody
+        m <- liftIO $ RS.processMessage appState clientId $ unBody rqbody
         ok `mkR` XS.createReply (snd m)
 
       mkR resp output = resp $ toResponse output
