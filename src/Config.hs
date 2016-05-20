@@ -1,35 +1,53 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Config where
+
+import qualified Data.Configurator as C
+import Data.Configurator.Types
+import Control.Exception (catch)
+
+import Data.Text (unpack)
 
 import           Options
 
-defaultHost :: String
-defaultHost = "localhost"
-
-defaultPort :: Int
-defaultPort = 9999
-
-defaultFSSyncPeriod :: Int
-defaultFSSyncPeriod = 30
-
-defaultOldDataRetainPeriod :: Int
-defaultOldDataRetainPeriod = 3600
-
-data AppConfig = AppConfig {
-  repositoryPathOpt      :: String,
-  repositoryBaseUrlOpt   :: String,
-  rsyncPathOpt      :: String,
-  snapshotSyncPeriodOpt  :: Int,
-  oldDataRetainPeriodOpt :: Int,
-  appPortOpt             :: Int
+data AppOptions = AppOptions {
+  configPath :: String
 }
 
-instance Options AppConfig where
-  defineOptions = pure AppConfig
-      <*> simpleOption "repo-path" "./rrdp" "Path to the repository"
-      <*> simpleOption "repo-uri"
-                       ("http://" ++ defaultHost ++ ":" ++ show defaultPort)
-                       "URI to the repository root. Is used for generating URI for the notification files."
-      <*> simpleOption "rsync-path" "./rsync" "Path to the repository"
-      <*> simpleOption "snapshot-sync-period" defaultFSSyncPeriod "Minimal period of time in seconds to synchronize snapshots to FS"
-      <*> simpleOption "old-data-retain-period" defaultOldDataRetainPeriod "Minimal period of time in seconds to retain old session data"
-      <*> simpleOption "port" defaultPort "Port to bind"
+data AppConfig  = AppConfig {
+  repositoryPath      :: String,
+  repositoryBaseUrl   :: String,
+  rsyncPath           :: String,
+  snapshotSyncPeriod  :: Int,
+  oldDataRetainPeriod :: Int,
+  appPort             :: Int,
+  rsyncRepoMap        :: [(String, String)]
+} deriving (Show)
+
+config :: AppOptions -> IO (Either String AppConfig)
+config (AppOptions confPath) = readConfig `catch` catchError
+  where
+    readConfig = do
+      conf          <- C.load [C.Required confPath]
+      port          <- C.lookupDefault 19999 conf "repository.rrdpPath"
+      repoPath      <- C.require conf "repository.rrdpPath"
+      repoBaseUrl   <- C.require conf "repository.baseUrl"
+      rsyncBasePath <- C.require conf "repository.rsync.basePath"
+      urlMapping    <- C.require conf "repository.rsync.urlMapping"
+      syncPeriod    <- C.lookupDefault 10 conf "snaphotSyncPeriod"
+      retainPeriod  <- C.lookupDefault 3600 conf "oldDataRetainPeriod"
+      return $ Right AppConfig {
+        repositoryPath = repoPath,
+        repositoryBaseUrl = repoBaseUrl,
+        rsyncPath          = rsyncBasePath,
+        snapshotSyncPeriod  = syncPeriod,
+        oldDataRetainPeriod = retainPeriod,
+        appPort             = port,
+        rsyncRepoMap        = urlMapping
+      }
+    catchError :: KeyError -> IO (Either String AppConfig)
+    catchError (KeyError key) = return $ Left $ unpack key ++ " must be defined"
+
+
+instance Options AppOptions where
+  defineOptions = pure AppOptions
+      <*> simpleOption "config-path" "rpki-pub-server.conf" "Path to the config file"

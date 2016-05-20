@@ -23,10 +23,15 @@ import           Types
 import qualified XML                        as XS
 
 main :: IO ()
-main = runCommand $ \opts _ -> setupWebAppAcid opts
+main = runCommand $ \opts _ -> do
+  conf <- config opts
+  case conf of
+    Left e     -> print $ "Error occured while reading the config file: " ++ e
+    Right c -> setupWebAppAcid c
+
 
 setupWebAppAcid :: AppConfig -> IO ()
-setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
+setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
   bracket (openLocalState ST.initialStore) createCheckpointAndClose
   (\acid -> do
       appState <- R.initialAppState appConf acid
@@ -50,7 +55,7 @@ setupWebAppAcid appConf @ AppConfig { appPortOpt = pPort } =
     )
   where
     serveXml :: AppConfig -> String -> ServerPart Response
-    serveXml AppConfig { repositoryPathOpt = p } name =
+    serveXml AppConfig { repositoryPath = p } name =
       serveFile (asContentType "text/xml") $ p ++ name
 
 
