@@ -96,6 +96,11 @@ data RepoError = NoObjectPresent !URI !Hash
               | OtherError !T.Text
   deriving (Eq, Show, Typeable, Data)
 
+data RsyncError = CannotMapToPath !URI
+              | CannotWrite !URI
+              | CannotDelete !URI
+  deriving (Eq, Show, Typeable, Data)
+
 -- private utility type to make logic easier to understand
 data ObjOperation a u d w = AddOrUpdate_ u | Delete_ d | Wrong_ w | List_ ClientId
   deriving (Eq, Show, Typeable, Data)

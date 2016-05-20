@@ -54,3 +54,6 @@ lbslen = toInteger . L.length
 
 sbslen :: SBS -> Integer
 sbslen = toInteger . S.length
+
+writeB64 :: Base64 -> FilePath -> IO ()
+writeB64 (Base64 b64 _) fileName = L.writeFile fileName b64
