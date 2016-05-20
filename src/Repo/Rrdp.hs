@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes       #-}
 {-# LANGUAGE RecordWildCards   #-}
 
 module Repo.Rrdp where
@@ -23,7 +23,10 @@ import           System.Directory
 import           System.FilePath
 import           System.IO.Error
 
+import           Data.String.Interpolate
+
 import           Config
+import qualified Log                        as LG
 import           Repo.State
 import           Types
 import qualified Util                       as U
@@ -34,52 +37,37 @@ rrdpSyncThread :: TChan (RepoState, ChangeSet) -> TMVar ChangeSet -> AppState ->
 rrdpSyncThread syncChan syncV
     AppState {
       currentState  = TRepoState{..},
-      appConfig     = AppConfig { snapshotSyncPeriodOpt = syncPeriod }
+      appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod }
     } = do
       t0 <- getCurrentTime
       waitAndProcess t0
     where
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
-        timestamp " time 0 = "
-
         -- wait until notified
         _ <- atomically $ takeTMVar syncV
-
-        timestamp " time 1 = "
         t1      <- getCurrentTime
-        if longEnough t0 t1 then do
-          timestamp " time 2 = "
+        if longEnough t0 t1 then
           doSyncAndWaitAgain t1
         else do
-          timestamp " time 3 = "
           threadDelay $ round (1000 * 1000 * toRational (syncMinPeriod - diffUTCTime t1 t0))
-          timestamp " time 4 = "
           doSyncAndWaitAgain t1
-          timestamp " time 5 = "
 
       longEnough utc1 utc2 = diffUTCTime utc1 utc2 < syncMinPeriod
 
       doSyncAndWaitAgain newTime = do
+        LG.info_ "Getting snapshot..."
         atomically $ do
           lastState <- stateSnapshot rMap
           clog      <- changeLogSnapshot changeLog
           let (chMap, _) = changeLog
+          -- TODO That has to be abstracted out, use some "methods"
           mapM_ ((`TMap.delete` chMap) . fst) clog
           writeTChan syncChan (lastState, concatMap snd clog)
+
         waitAndProcess newTime
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
-
-
-
-
--- temporary poorman logging until the proper one is used
-timestamp :: String -> IO ()
-timestamp s = do
-  t <- getCurrentTime
-  print $ s ++ show t
-
 
 {-
   syncFSThread creates a thread that flushes the changes to FS.
@@ -95,8 +83,8 @@ data SyncFSData = SyncFSData {
 syncFSThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
 syncFSThread syncChan appState @ AppState {
   appConfig = AppConfig {
-      repositoryPathOpt = repoDir,
-      oldDataRetainPeriodOpt = retainPeriod
+      repositoryPath = repoDir,
+      oldDataRetainPeriod = retainPeriod
     }
   } = do
   uuid <- nextRandom
@@ -137,27 +125,26 @@ syncFSThread syncChan appState @ AppState {
 
 
     scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
-      timestamp "scheduleDeltaRemoval 1: "
+      LG.info_ [i|Scheduled removal of delta #{sId}  #{s} |]
       threadDelay $ retainPeriod * 1000 * 1000
-      timestamp "scheduleDeltaRemoval 2: "
+      LG.info_ $ "Removing delta " ++ U.cs sId ++ " " ++ show s
       removeFile $ repoDir </> T.unpack sId </> show s </> "delta.xml"
 
     scheduleFullCleanup (SessionId sId) = forkIO $ do
-      timestamp "scheduleFullCleanup 1: "
+      LG.info_ [i|Scheduled full cleanup except for session #{sId} |]
       threadDelay $ retainPeriod * 1000 * 1000
-      timestamp "scheduleFullCleanup 2: "
+      LG.info_ "Starting full clean up"
       exists <- doesDirectoryExist repoDir
       when exists $ do
         dirs <- getDirectoryContents repoDir
         let filterOut = [".", "..", T.unpack sId, "notification.xml"]
         let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
-        timestamp $ "sessionsToDelete = " ++ show sessionsToDelete
+        LG.info_ $ "Sessions to delete: " ++ show sessionsToDelete
         mapM_ removeDirectoryRecursive sessionsToDelete
 
     scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ forever $ do
-      timestamp "scheduleOldSnapshotsCleanup 1: "
+      LG.info_ [i|Scheduled expired snapshot cleanup in session #{sId}|]
       threadDelay $ retainPeriod * 1000 * 1000
-      timestamp "scheduleOldSnapshotsCleanup 2: "
       let sessionDir = repoDir </> T.unpack sId
       exists <- doesDirectoryExist sessionDir
       when exists $ do
@@ -167,11 +154,13 @@ syncFSThread syncChan appState @ AppState {
              [] -> []
              serials -> let m = show (maximum serials) in filter (/= m) allDirs
         let period = 3600 :: NominalDiffTime
-        mapM_ (\d -> do            
+        mapM_ (\d -> do
             let snapshotFile = sessionDir </> d </> "snapshot.xml"
             ctime <- getModificationTime snapshotFile
             now   <- getCurrentTime
-            when (diffUTCTime now ctime < period) $ removeFile snapshotFile
+            when (diffUTCTime now ctime < period) $ do
+              LG.info_ $ "Deleting snapshot " ++ snapshotFile
+              removeFile snapshotFile
           ) dirsToDelete
 
 
@@ -179,8 +168,8 @@ syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteSt
 syncToFS (sessionId @ (SessionId sId), Serial s)
   AppState {
     appConfig = AppConfig {
-      repositoryPathOpt = repoDir,
-      repositoryBaseUrlOpt = repoUrl
+      repositoryPath = repoDir,
+      repositoryBaseUrl = repoUrl
     }} (snapshotXml, snapshotHash) (deltaXml, _) deltas = do
       createDirectoryIfMissing True storeDir
       _ <- writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
