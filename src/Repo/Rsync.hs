@@ -7,7 +7,7 @@ import           Control.Exception
 import           Control.Monad           (unless)
 
 import           Data.Function           (on)
-import           Data.List               (init, isPrefixOf, sortBy, stripPrefix)
+import           Data.List               (isPrefixOf, sortBy, stripPrefix)
 import           Data.Maybe              (listToMaybe)
 import           Data.String.Interpolate
 
@@ -59,7 +59,7 @@ rsyncThread syncChan AppState {
             unless (normalise oneLevelUp == normalise storePath) $ prune oneLevelUp storePath
           _ -> return ()
         where
-         list p = filter (`elem` [".", ".."]) <$> getDirectoryContents p
+         list p = filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents p
 
       mapToPath u = do
         -- get the longest FS prefix
