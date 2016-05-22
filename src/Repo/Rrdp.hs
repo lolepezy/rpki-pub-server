@@ -153,14 +153,14 @@ syncFSThread syncChan appState @ AppState {
         let dirsToDelete = case mapMaybe U.maybeInteger allDirs of
              [] -> []
              serials -> let m = show (maximum serials) in filter (/= m) allDirs
-        let period = 3600 :: NominalDiffTime
         mapM_ (\d -> do
             let snapshotFile = sessionDir </> d </> "snapshot.xml"
             ctime <- getModificationTime snapshotFile
             now   <- getCurrentTime
-            when (diffUTCTime now ctime < period) $ do
+            when (diffUTCTime now ctime < (fromInteger . toInteger) retainPeriod) $ do
               LG.info_ $ "Deleting snapshot " ++ snapshotFile
-              removeFile snapshotFile
+              snapshotExists <- doesFileExist snapshotFile
+              when snapshotExists $ removeFile snapshotFile
           ) dirsToDelete
 
 
