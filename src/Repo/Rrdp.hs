@@ -33,8 +33,8 @@ import qualified Util                       as U
 import qualified XML                        as XS
 
 
-rrdpSyncThread :: TChan (RepoState, ChangeSet) -> TMVar ChangeSet -> AppState -> IO ()
-rrdpSyncThread syncChan syncV
+rrdpAccumulatorThread :: LG.Logger -> TChan (RepoState, ChangeSet) -> TMVar ChangeSet -> AppState -> IO ()
+rrdpAccumulatorThread logger syncChan syncV
     AppState {
       currentState  = TRepoState{..},
       appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod }
@@ -45,8 +45,8 @@ rrdpSyncThread syncChan syncV
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
         -- wait until notified
-        _ <- atomically $ takeTMVar syncV
-        t1      <- getCurrentTime
+        _  <- atomically $ takeTMVar syncV
+        t1 <- getCurrentTime
         if longEnough t0 t1 then
           doSyncAndWaitAgain t1
         else do
@@ -56,7 +56,7 @@ rrdpSyncThread syncChan syncV
       longEnough utc1 utc2 = diffUTCTime utc1 utc2 < syncMinPeriod
 
       doSyncAndWaitAgain newTime = do
-        LG.info_ "Getting snapshot..."
+        LG.info logger $ LG.msg "Getting snapshot..."
         atomically $ do
           lastState <- stateSnapshot rMap
           clog      <- changeLogSnapshot changeLog
@@ -80,10 +80,11 @@ data SyncFSData = SyncFSData {
   totalDeltaSize :: Integer
 }
 
-syncFSThread :: TChan (RepoState, ChangeSet) -> AppState -> IO ()
-syncFSThread syncChan appState @ AppState {
+syncFSThread :: LG.Logger -> TChan (RepoState, ChangeSet) -> AppState -> IO ()
+syncFSThread logger syncChan AppState {
   appConfig = AppConfig {
       repositoryPath = repoDir,
+      repositoryBaseUrl = repoUrl,
       oldDataRetainPeriod = retainPeriod
     }
   } = do
@@ -94,7 +95,10 @@ syncFSThread syncChan appState @ AppState {
   go currentSessionId (Serial 1) (SyncFSData DQ.empty 0)
 
   where
-    go sessionId serial syncData = do
+    info_ m = LG.info logger $ LG.msg m
+
+    go :: SessionId -> Serial -> SyncFSData -> IO ()
+    go sessionId @ (SessionId sId) serial @ (Serial se) syncData = do
       (lastState, pdus) <- atomically $ readTChan syncChan
 
       let snapshotXml = serializeSnapshot lastState $ SnapshotDef (Version 3) sessionId serial
@@ -103,47 +107,67 @@ syncFSThread syncChan appState @ AppState {
           deltaXml = serializeDelta $ Delta (DeltaDef (Version 3) sessionId serial) pdus
           (deltaSize, deltaHash) = (U.lbslen deltaXml, U.getHash deltaXml)
 
-          updated :: SyncFSData -> (SyncFSData, [Serial])
-          updated (SyncFSData dts totalSize) =
-            _updated (DQ.pushFront dts (pdus, deltaSize, deltaHash, serial)) (totalSize + deltaSize)
+          updatedDeltaQueue :: SyncFSData -> (SyncFSData, [Serial])
+          updatedDeltaQueue (SyncFSData deltaQ totalSize) =
+            updated' (DQ.pushFront deltaQ (pdus, deltaSize, deltaHash, serial)) (totalSize + deltaSize)
             where
-              _updated ds ts
+              updated' ds ts
                 | ts < snapshotSize = (SyncFSData ds ts, [])
                 | otherwise = case DQ.popBack ds of
                   Just ((_, size, _, dSerial), ds') ->
-                    let (syncData', toDelete) = _updated ds' (ts - size)
+                    let (syncData', toDelete) = updated' ds' (ts - size)
                     in (syncData', dSerial : toDelete)
                   Nothing -> (SyncFSData DQ.empty 0, [])
 
-      let (newSyncData @ (SyncFSData deltas _), deltaSerialsToDelete) = updated syncData
+      let (newSyncData @ (SyncFSData deltas _), deltaSerialsToDelete) = updatedDeltaQueue syncData
 
-      fs <- syncToFS (sessionId, serial) appState (snapshotXml, snapshotHash) (deltaXml, deltaHash) deltas
+      let
+        storeDir = repoDir </> U.cs sId </> show se
+        notification = serializeNotification (sessionId, serial) repoUrl snapshotHash deltas
+
+        writeLastSnapshot = write_ $ L.writeFile (storeDir </> "snapshot.xml") snapshotXml
+        writeDelta        = write_ $ L.writeFile (storeDir </> "delta.xml") deltaXml
+
+        writeNotification = write_ $ do
+          let tmp = repoDir </> "notification.xml.tmp"
+          L.writeFile tmp notification
+          renameFile tmp (repoDir </> "notification.xml")
+
+        write_ f = f >> return (Right ())
+        in void $ do
+          createDirectoryIfMissing True storeDir
+          void $ writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
+          unless (null deltas) $
+            void $ writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
+          writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
+
 
       mapM_ (scheduleDeltaRemoval sessionId) deltaSerialsToDelete
 
       go sessionId (U.nextS serial) newSyncData
 
+    -- TODO Handle errors in these separate threads (log them)
 
     scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
-      LG.info_ [i|Scheduled removal of delta #{sId}  #{s} |]
+      info_ [i|Scheduled removal of delta #{sId}  #{s} |]
       threadDelay $ retainPeriod * 1000 * 1000
-      LG.info_ $ "Removing delta " ++ U.cs sId ++ " " ++ show s
+      info_ $ "Removing delta " ++ U.cs sId ++ " " ++ show s
       removeFile $ repoDir </> T.unpack sId </> show s </> "delta.xml"
 
     scheduleFullCleanup (SessionId sId) = forkIO $ do
-      LG.info_ [i|Scheduled full cleanup except for session #{sId} |]
+      info_ [i|Scheduled full cleanup except for session #{sId} |]
       threadDelay $ retainPeriod * 1000 * 1000
-      LG.info_ "Starting full clean up"
+      info_ "Starting full clean up"
       exists <- doesDirectoryExist repoDir
       when exists $ do
         dirs <- getDirectoryContents repoDir
         let filterOut = [".", "..", T.unpack sId, "notification.xml"]
         let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
-        LG.info_ $ "Sessions to delete: " ++ show sessionsToDelete
+        info_ $ "Sessions to delete: " ++ show sessionsToDelete
         mapM_ removeDirectoryRecursive sessionsToDelete
 
     scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ forever $ do
-      LG.info_ [i|Scheduled expired snapshot cleanup in session #{sId}|]
+      info_ [i|Scheduled expired snapshot cleanup in session #{sId}|]
       threadDelay $ retainPeriod * 1000 * 1000
       let sessionDir = repoDir </> T.unpack sId
       exists <- doesDirectoryExist sessionDir
@@ -158,37 +182,10 @@ syncFSThread syncChan appState @ AppState {
             ctime <- getModificationTime snapshotFile
             now   <- getCurrentTime
             when (diffUTCTime now ctime < (fromInteger . toInteger) retainPeriod) $ do
-              LG.info_ $ "Deleting snapshot " ++ snapshotFile
+              info_ $ "Deleting snapshot " ++ snapshotFile
               snapshotExists <- doesFileExist snapshotFile
               when snapshotExists $ removeFile snapshotFile
           ) dirsToDelete
-
-
-syncToFS :: (SessionId, Serial) -> AppState -> (L.ByteString, Hash) -> (L.ByteString, Hash) -> DeltaDequeue -> IO (Either RRDPError ())
-syncToFS (sessionId @ (SessionId sId), Serial s)
-  AppState {
-    appConfig = AppConfig {
-      repositoryPath = repoDir,
-      repositoryBaseUrl = repoUrl
-    }} (snapshotXml, snapshotHash) (deltaXml, _) deltas = do
-      createDirectoryIfMissing True storeDir
-      _ <- writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
-      _ <- writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
-      writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
-  where
-    storeDir = repoDir </> T.unpack sId </> show s
-    notification = serializeNotification (sessionId, Serial s) repoUrl snapshotHash deltas
-
-    writeLastSnapshot = write_ $ L.writeFile (storeDir </> "snapshot.xml") snapshotXml
-    writeDelta        = write_ $ L.writeFile (storeDir </> "delta.xml") deltaXml
-
-    writeNotification = write_ $ do
-      let tmp = repoDir </> "notification.xml.tmp"
-      L.writeFile tmp notification
-      renameFile tmp (repoDir </> "notification.xml")
-
-    write_ f = f >> return (Right ())
-
 
 
 serializeNotification :: (SessionId, Serial) -> String -> Hash -> DeltaDequeue -> U.LBS

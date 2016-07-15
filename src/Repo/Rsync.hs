@@ -1,10 +1,10 @@
 {-# LANGUAGE QuasiQuotes     #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Repo.Rsync where
+module Repo.Rsync (rsyncThread) where
 
 import           Control.Exception
-import           Control.Monad           (unless)
+import           Control.Monad           (unless, forever)
 
 import           Data.Function           (on)
 import           Data.List               (isPrefixOf, sortBy, stripPrefix)
@@ -12,7 +12,6 @@ import           Data.Maybe              (listToMaybe)
 import           Data.String.Interpolate
 
 import           Config
-import qualified Log                     as L
 import           Types
 import qualified Util                    as U
 
@@ -20,16 +19,18 @@ import           Control.Concurrent.STM
 
 import           System.Directory
 import           System.FilePath
+import qualified Log as L
 
 import           Repo.State
 
-rsyncThread :: TChan ChangeSet -> AppState -> IO ()
-rsyncThread syncChan AppState {
+rsyncThread :: L.Logger -> TChan ChangeSet -> AppState -> IO ()
+rsyncThread logger syncChan AppState {
     currentState  = TRepoState{..},
     appConfig     = AppConfig {..}
-    } = do
-      pdus <- atomically $ readTChan syncChan
+    } = forever $ do
+      pdus   <- atomically $ readTChan syncChan
       mapM_ (\pdu -> applyToFs pdu `catch` catchError) pdus
+
     where
       applyToFs :: QueryPdu -> IO ()
       applyToFs (QP (Publish u b64 _ _)) =
@@ -45,10 +46,12 @@ rsyncThread syncChan AppState {
       doApply u f =
         case mapToPath u of
           Just (fileName, filePath, storePath) -> f fileName filePath storePath
-          Nothing -> L.error_ [i|Couldn't find FS mapping for url #{u} |]
+          Nothing -> _err [i|Couldn't find FS mapping for url #{u} |]
 
       catchError :: SomeException -> IO ()
-      catchError e = L.error_ [i|Error occured #{e} |]
+      catchError e = _err [i|Error occured #{e} |]
+
+      _err s = L.err logger $ L.msg s
 
       prune path storePath = do
         files <- list path

@@ -66,6 +66,7 @@ executable rpki-pub-server
                     ,fast-logger
                     ,string-conversions
                     ,configurator
+                    ,tinylog
 
 
   default-language:    Haskell2010

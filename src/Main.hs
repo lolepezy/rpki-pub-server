@@ -37,7 +37,7 @@ setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
       appState <- R.initialAppState appConf acid
       simpleHTTP nullConf { port = pPort } $ msum [
           dir "message" $ method POST >>
-             rpkiContentType (processMessageAcid appState),
+            rpkiContentType (processMessageAcid appState),
 
           dir "notification.xml" $ method GET >>
             serveXml appConf "notification.xml",
