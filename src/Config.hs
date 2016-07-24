@@ -16,7 +16,7 @@ data AppOptions = AppOptions {
 data AppConfig  = AppConfig {
   repositoryPath      :: String,
   repositoryBaseUrl   :: String,
-  rsyncPath           :: String,
+  rsyncBasePath       :: String,
   snapshotSyncPeriod  :: Int,
   oldDataRetainPeriod :: Int,
   appPort             :: Int,
@@ -31,14 +31,14 @@ config (AppOptions confPath) = readConfig `catch` catchError
       port          <- C.lookupDefault 19999 conf "repository.rrdpPath"
       repoPath      <- C.require conf "repository.rrdpPath"
       repoBaseUrl   <- C.require conf "repository.baseUrl"
-      rsyncBasePath <- C.require conf "repository.rsync.basePath"
+      rsyncPath     <- C.require conf "repository.rsync.basePath"
       urlMapping    <- C.require conf "repository.rsync.urlMapping"
       syncPeriod    <- C.lookupDefault 10 conf "snaphotSyncPeriod"
       retainPeriod  <- C.lookupDefault 3600 conf "oldDataRetainPeriod"
       return $ Right AppConfig {
         repositoryPath = repoPath,
-        repositoryBaseUrl = repoBaseUrl,
-        rsyncPath          = rsyncBasePath,
+        repositoryBaseUrl   = repoBaseUrl,
+        rsyncBasePath       = rsyncPath,
         snapshotSyncPeriod  = syncPeriod,
         oldDataRetainPeriod = retainPeriod,
         appPort             = port,

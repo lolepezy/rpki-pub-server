@@ -34,24 +34,27 @@ rsyncThread logger syncChan AppState {
     where
       applyToFs :: QueryPdu -> IO ()
       applyToFs (QP (Publish u b64 _ _)) =
-        doApply u $ \fileName filePath _ ->
-          createDirectoryIfMissing True filePath >>
+        doApply u $ \fileName filePath -> do
+          _info [i|Creating fileName = #{fileName} |]
+          createDirectoryIfMissing True filePath
           U.writeB64 b64 fileName
 
       applyToFs (QW (Withdraw u _ _)) =
-        doApply u $ \fileName filePath storePath -> do
+        doApply u $ \fileName filePath -> do
+          _info [i|Creating fileName = #{fileName} |]
           removeFile fileName
-          prune filePath storePath
+          prune filePath rsyncBasePath
 
       doApply u f =
         case mapToPath u of
-          Just (fileName, filePath, storePath) -> f fileName filePath storePath
+          Just (fileName, filePath) -> f (rsyncBasePath </> fileName) (rsyncBasePath </> filePath)
           Nothing -> _err [i|Couldn't find FS mapping for url #{u} |]
 
       catchError :: SomeException -> IO ()
       catchError e = _err [i|Error occured #{e} |]
 
       _err s = L.err logger $ L.msg s
+      _info s = L.info logger $ L.msg s
 
       prune path storePath = do
         files <- list path
@@ -68,5 +71,5 @@ rsyncThread logger syncChan AppState {
         -- get the longest FS prefix
         (prefix, path) <- listToMaybe $ sortBy (compare `on` (length . fst)) $ filter (\(m, _) -> m `isPrefixOf` us) rsyncRepoMap
         fName          <- (path </> ) <$> stripPrefix prefix us
-        return (fName, dropFileName fName, path)
+        return (fName, dropFileName fName)
           where us = show u
