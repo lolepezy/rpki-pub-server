@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 import           Control.Applicative        (optional)
 import           Control.Exception          (bracket)
@@ -60,7 +61,7 @@ setupWebAppAcid appConf @ AppConfig { appPort = pPort } =
 
 
 processMessageAcid :: RS.AppState -> ServerPart Response
-processMessageAcid appState = do
+processMessageAcid appState @ RS.AppState{..} = do
     req  <- askRq
     bod <- liftIO $ takeRequestBody req
     cId  <- optional $ queryString $ look "clientId"
@@ -71,7 +72,8 @@ processMessageAcid appState = do
     where
       respond :: ClientId -> RqBody -> ServerPart Response
       respond clientId rqbody = do
-        m <- liftIO $ RS.processMessage appState clientId $ unBody rqbody
+        let applyToAcid = ST.applyActions acidRepo clientId
+        m <- liftIO $ RS.processMessage appState clientId (unBody rqbody) applyToAcid
         ok `mkR` XS.createReply (snd m)
 
       mkR resp output = resp $ toResponse output

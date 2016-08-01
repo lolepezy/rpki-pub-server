@@ -8,7 +8,6 @@ module Repo.State where
 import qualified Control.Concurrent.AdvSTM  as AS
 import           Control.Concurrent.STM     as S
 import           Control.Exception.Base
-import           Control.Monad
 import           Data.Data                  (Typeable)
 import           Data.Function              (on)
 import           Data.List                  (sortBy)
@@ -20,7 +19,6 @@ import qualified STMContainers.Multimap     as TMMap
 import qualified Data.ByteString.Lazy.Char8 as L
 
 import           Data.Acid
-import           Data.Acid.Advanced         (update')
 
 import           Config
 import qualified Store                      as ST
@@ -38,6 +36,8 @@ type RepoState  = [(URI, (Base64, ClientId))]
 type TRepoMap   = TMap.Map URI (Base64, ClientId)
 type TClientMap = TMMap.Multimap ClientId URI
 type TChangeLog = (TMap.Map Integer ChangeSet, TVar Integer)
+
+type UpdateAcid = [Action] -> IO ()
 
 data TRepoState = TRepoState {
   rMap      :: TRepoMap,
@@ -79,12 +79,12 @@ initialTRepo repoObjects = do
   return TRepoState { rMap = rmap, cMap = cmap, changeLog = (logMap, counter) }
 
 
-processMessage :: AppState -> ClientId -> L.ByteString -> IO (AppState, Reply)
-processMessage appState clientId queryXml =
+processMessage :: AppState -> ClientId -> L.ByteString -> UpdateAcid -> IO (AppState, Reply)
+processMessage appState clientId queryXml updateAcid =
   case XS.parseMessage queryXml of
     Left e                    -> return (appState, Errors [XMLError e])
     Right ListMessage         -> listObjects appState clientId
-    Right (PduMessage _ pdus) -> applyActionsToState appState clientId pdus
+    Right (PduMessage _ pdus) -> applyActionsToState appState clientId pdus updateAcid
 
 
 listObjects :: AppState -> ClientId -> IO (AppState, Reply)
@@ -94,12 +94,11 @@ listObjects a @ AppState { currentState = TRepoState{..} } clientId = atomically
   return (a, ListReply [ ListPdu u h | (u, Just (Base64 _ h, _)) <- objs ])
 
 
-applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> IO (AppState, Reply)
+applyActionsToState :: AppState -> ClientId -> [QueryPdu] -> UpdateAcid -> IO (AppState, Reply)
 applyActionsToState appState @ AppState {
     currentState = repoState @ TRepoState{..},
-    acidRepo = repo,
     changeSync = chSync }
-    clientId pdus = do
+    clientId pdus updateAcid = do
   actions <- applyToState `catch` rollbackActions
   return (appState, reply actions)
   where
@@ -110,7 +109,7 @@ applyActionsToState appState @ AppState {
           AS.liftAdv $ do
             updateChangeLog changeLog
             chSync pdus
-          AS.onCommit $ void $ update' repo (ST.ApplyActions clientId actions)
+          AS.onCommit $ updateAcid actions
         _ ->
           AS.liftAdv $ throwSTM $ RollbackException actions
 

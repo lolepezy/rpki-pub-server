@@ -5,12 +5,13 @@
 
 module Store where
 
+import           Control.Monad (void)
 import           Control.Monad.Reader (ask)
 import           Control.Monad.State  (get, put)
 import           Data.Set             (fromList, member)
 
 import           Data.Acid            (AcidState, Query, Update, makeAcidic)
-import           Data.Acid.Advanced   (query')
+import           Data.Acid.Advanced   (query', update')
 import           Data.Data            (Data, Typeable)
 import           Data.IxSet           (Indexable, IxSet, empty, ixGen, ixSet,
                                        toList)
@@ -44,8 +45,8 @@ getAllObjects_ = do
   Repo {..} <- ask
   return $ toList objects
 
-applyActions :: ClientId -> [Action] -> Update Repo Repo
-applyActions cId actions = do
+applyActions_ :: ClientId -> [Action] -> Update Repo Repo
+applyActions_ cId actions = do
   oldR @ (Repo objects) <- get
   let toDelete = fromList [ uri | Delete_ uri <- actions ]
   let updates = [ RepoObject cId u base64 | AddOrUpdate_ (u, base64) <- actions, keep u toDelete ]
@@ -56,11 +57,15 @@ applyActions cId actions = do
   where
     keep u toDelete = not $ u `member` toDelete
 
+
 initialStore :: Repo
 initialStore = Repo IX.empty
 
 
-$(makeAcidic ''Repo [ 'getAllObjects_, 'applyActions ])
+$(makeAcidic ''Repo [ 'getAllObjects_, 'applyActions_ ])
 
 getAllObjects :: AcidState Repo -> IO [RepoObject]
 getAllObjects acid = query' acid GetAllObjects_
+
+applyActions :: AcidState Repo -> ClientId -> [Action] -> IO ()
+applyActions acid clientId actions = void $ update' acid (ApplyActions_ clientId actions)

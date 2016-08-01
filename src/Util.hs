@@ -1,5 +1,7 @@
 module Util where
 
+import           Control.Exception
+
 import qualified Crypto.Hash.SHA256          as SHA256
 import qualified Data.ByteString.Base16      as B16
 import qualified Data.ByteString.Base64.Lazy as B64
@@ -57,3 +59,17 @@ sbslen = toInteger . S.length
 
 writeB64 :: Base64 -> FilePath -> IO ()
 writeB64 (Base64 b64 _) fileName = L.writeFile fileName b64
+
+data IOAction = IOAction {
+  execute  :: IO (),
+  rollback :: IO ()
+}
+
+executeAll :: [IOAction] -> IO ()
+executeAll [] = return ()
+executeAll (a : as) = do
+  execute a
+  executeAll as `catch` rollbackAndRethrow
+  where
+    rollbackAndRethrow :: SomeException -> IO ()
+    rollbackAndRethrow e = rollback a >> throw e

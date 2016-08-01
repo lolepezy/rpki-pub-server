@@ -25,7 +25,7 @@ import           System.IO.Error
 
 import           Data.String.Interpolate
 
-import           Config
+import           Config(AppConfig(..))
 import qualified Log                        as LG
 import           Repo.State
 import           Types
