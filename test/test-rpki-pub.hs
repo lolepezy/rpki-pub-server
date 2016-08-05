@@ -46,6 +46,7 @@ mkPublishXml uri b64 = L.pack [i|
   |]
   where s = U.base64bs b64 :: L.ByteString
 
+initialState :: IO AppState
 initialState = do
   acid  <- openMemoryState initialStore
   tRepo <- atomically $ initialTRepo []
@@ -59,10 +60,16 @@ initialState = do
 testPublishToEmpty :: Test
 testPublishToEmpty = TestCase $ do
     appState @ AppState{..} <- initialState
-    let xml = mkPublishXml "rsync://test.url/aaa.cert" ((unsafeBase64 . L.unpack . B64.encode) "*&^random stuff@#$")
-    (state, reply) <- processMessage appState (ClientId "default") xml (\a -> return ())
+    let clientId = ClientId "default"
+    let uri = "rsync://test.url/aaa.cert"
+    let b64 @ (Base64 _ h) = (unsafeBase64 . L.unpack . B64.encode) "*&^random stuff@#$"
+    let xml = mkPublishXml uri b64
 
-    assertEqual "The result was wrong" reply Success
+    (state0, reply0) <- processMessage appState clientId xml (\a -> return ())
+    (state1, reply1) <- listObjects appState clientId
+
+    assertEqual "Could not publish the object" reply0 Success
+    assertEqual "The result was wrong" reply1 (ListReply [ListPdu (unsafeMkUri uri) h])
 
 
 main :: IO Counts
