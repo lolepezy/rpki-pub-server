@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts  #-}
 module Util where
 
 import           Control.Exception
@@ -13,7 +14,7 @@ import           Data.UUID
 import           Types
 
 nextS :: Serial -> Serial
-nextS (Serial s) = Serial $ s + 1
+nextS (Serial s) = Serial (s + 1)
 
 maybeToEither :: e -> Maybe a -> Either e a
 maybeToEither e Nothing  = Left e
@@ -24,9 +25,9 @@ leftmap f (Left x)  = Left $ f x
 leftmap _ (Right r) = Right r
 
 mkBase64 :: L.ByteString -> Either ParseError Base64
-mkBase64 s = case B64.decode s of
-   Right b64 -> Right $ Base64 b64 $ getHash b64
-   Left err  -> Left $ BadBase64 $ T.pack err
+mkBase64 encoded = case B64.decode encoded of
+   Right bytes -> Right $ Base64 bytes $ getHash bytes
+   Left err    -> Left $ BadBase64 $ T.pack err
 
 getHash :: L.ByteString -> Hash
 getHash = Hash . L.fromStrict . B16.encode . SHA256.hashlazy
@@ -39,7 +40,7 @@ maybeInteger s = case reads s of
 verify :: Bool -> e -> x -> Either e x
 verify condition e x = if condition then Right x else Left e
 
-base64bs :: Base64 -> S.ByteString
+base64bs :: SC.ConvertibleStrings L.ByteString s => Base64 -> s
 base64bs (Base64 b64 _) = cs . B64.encode $ b64
 
 uuid2SessionId :: UUID -> SessionId
