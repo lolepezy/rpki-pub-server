@@ -50,7 +50,7 @@ install:
  - echo "$(ghc --version) [$(ghc --print-project-git-commit-id 2> /dev/null || echo '?')]"
  - case "$BUILD" in
      stack)
-       stack --no-terminal test --only-dependencies;;
+       stack --no-terminal test;;
      cabal)
        cabal --version;
        travis_retry cabal update;
