@@ -25,7 +25,7 @@ import qualified Data.ByteString.Base64.Lazy as B64
 import qualified Data.ByteString.Lazy.Char8 as L
 
 import Test.QuickCheck (arbitrary, Property, quickCheck, (==>), listOf1, elements, vectorOf, suchThat)
-import Test.QuickCheck.Monadic (assert, monadicIO, pick, pre, run)
+import Test.QuickCheck.Monadic (PropertyM, assert, monadicIO, pick, pre, run)
 
 import qualified Util as U
 
@@ -64,24 +64,33 @@ initialState = do
     changeSync = \ch -> return ()
   }
 
+generatePublishable :: PropertyM IO [(String, Base64)]
+generatePublishable = do
+  uris <- pick $ nub <$> vectorOf 100 (do
+      host    <- listOf1 $ elements ['a'..'z']
+      path    <- listOf1 $ elements ['a'..'z']
+      return [i|rsync://#{host}/#{path}.cert|]
+    )
+
+  pick $ mapM (\u -> do
+      content <- L.pack <$> suchThat arbitrary (not . null)
+      let b64  = (unsafeBase64 . L.unpack . B64.encode) content
+      return (u, b64)
+    ) uris
+
+exists :: Reply -> [(String, Base64)] -> Bool
+exists (ListReply pdus) objects = null [
+  "" | ListPdu u h <- pdus,
+      null [ 1 | (u', b64 @ (Base64 _ h')) <- objects, unsafeMkUri u' == u && h == h' ]
+  ]
+
 
 prop_publishedShouldBeListed :: Property
 prop_publishedShouldBeListed = monadicIO $ do
-    appState @ AppState{..} <- run initialState
-
     let clientId = ClientId "default"
 
-    uris <- pick $ nub <$> vectorOf 100 (do
-        host    <- listOf1 $ elements ['a'..'z']
-        path    <- listOf1 $ elements ['a'..'z']
-        return [i|rsync://#{host}/#{path}.cert|]
-      )
-
-    objects <- pick $ mapM (\u -> do
-        content <- L.pack <$> suchThat arbitrary (not . null)
-        let b64  = (unsafeBase64 . L.unpack . B64.encode) content
-        return (u, b64)
-      ) uris
+    appState @ AppState{..} <- run initialState
+    objects <- generatePublishable
 
     mapM_ (\(uri, b64 @ (Base64 _ h)) -> do
         let xml = mkPublishXml uri b64
@@ -92,30 +101,14 @@ prop_publishedShouldBeListed = monadicIO $ do
     (_, replyAll) <- run $ listObjects appState clientId
 
     assert $ exists replyAll objects
-    where
-      exists (ListReply pdus) objects = null [
-        "" | ListPdu u h <- pdus,
-            null [ 1 | (u', b64 @ (Base64 _ h')) <- objects, unsafeMkUri u' == u && h == h' ]
-        ]
 
 
 prop_publishedShouldBeListedAsync :: Property
 prop_publishedShouldBeListedAsync = monadicIO $ do
-    appState @ AppState{..} <- run initialState
-
     let clientId = ClientId "default"
 
-    uris <- pick $ nub <$> vectorOf 50 (do
-        host    <- listOf1 $ elements ['a'..'z']
-        path    <- listOf1 $ elements ['a'..'z']
-        return [i|rsync://#{host}/#{path}.cert|]
-      )
-
-    objects <- pick $ mapM (\u -> do
-        content <- L.pack <$> suchThat arbitrary (not . null)
-        let b64  = (unsafeBase64 . L.unpack . B64.encode) content
-        return (u, b64)
-      ) uris
+    appState @ AppState{..} <- run initialState
+    objects <- generatePublishable
 
     asyncs <- mapM (\(uri, b64 @ (Base64 _ h)) -> do
         let xml = mkPublishXml uri b64
@@ -124,16 +117,10 @@ prop_publishedShouldBeListedAsync = monadicIO $ do
 
     rs <- run $ mapM wait asyncs
 
-    assert $ any (\(_, r) -> r == Success) rs
-
     (_, replyAll) <- run $ listObjects appState clientId
 
+    assert $ any (\(_, r) -> r == Success) rs
     assert $ exists replyAll objects
-    where
-      exists (ListReply pdus) objects = null [
-        "" | ListPdu u h <- pdus,
-            null [ 1 | (u', b64 @ (Base64 _ h')) <- objects, unsafeMkUri u' == u && h == h' ]
-        ]
 
 
 main :: IO ()
