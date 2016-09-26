@@ -36,35 +36,26 @@ import qualified XML                        as XS
 rrdpAccumulatorThread :: LG.Logger -> TChan (RepoState, ChangeSet) -> TMVar ChangeSet -> AppState -> IO ()
 rrdpAccumulatorThread logger syncChan syncV
     AppState {
-      currentState  = TRepoState{..},
-      appConfig     = AppConfig { snapshotSyncPeriod = syncPeriod }
+      currentState = currentState,
+      appConfig    = AppConfig { snapshotSyncPeriod = syncPeriod }
     } = do
       t0 <- getCurrentTime
       waitAndProcess t0
     where
       waitAndProcess :: UTCTime -> IO ()
       waitAndProcess t0 = do
-        -- wait until notified
-        _  <- atomically $ takeTMVar syncV
+        -- wait until notified, i.e. and update comes in
+        void $ atomically $ takeTMVar syncV
         t1 <- getCurrentTime
-        if longEnough t0 t1 then
-          doSyncAndWaitAgain t1
-        else do
+        unless (longEnough t0 t1) $
           threadDelay $ round (1000 * 1000 * toRational (syncMinPeriod - diffUTCTime t1 t0))
-          doSyncAndWaitAgain t1
+        doSyncAndWaitAgain t1
 
       longEnough utc1 utc2 = diffUTCTime utc1 utc2 < syncMinPeriod
 
       doSyncAndWaitAgain newTime = do
         LG.info logger $ LG.msg "Getting snapshot..."
-        atomically $ do
-          lastState <- stateSnapshot rMap
-          clog      <- changeLogSnapshot changeLog
-          let (chMap, _) = changeLog
-          -- TODO That has to be abstracted out, use some "methods"
-          mapM_ ((`TMap.delete` chMap) . fst) clog
-          writeTChan syncChan (lastState, concatMap snd clog)
-
+        void $ atomically $ writeTChan syncChan <$> checkpoint currentState
         waitAndProcess newTime
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime

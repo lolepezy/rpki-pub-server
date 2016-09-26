@@ -78,6 +78,15 @@ initialTRepo repoObjects = do
   counter <- newTVar 0
   return TRepoState { rMap = rmap, cMap = cmap, changeLog = (logMap, counter) }
 
+-- empty the change log and return the current state
+checkpoint :: TRepoState -> STM (RepoState, [QueryPdu])
+checkpoint TRepoState{..} = do
+  lastState <- stateSnapshot rMap
+  clog      <- changeLogSnapshot changeLog
+  let (chMap, _) = changeLog
+  mapM_ ((`TMap.delete` chMap) . fst) clog
+  return (lastState, concatMap snd clog)
+
 
 processMessage :: AppState -> ClientId -> L.ByteString -> UpdateAcid -> IO (AppState, Reply)
 processMessage appState clientId queryXml updateAcid =
