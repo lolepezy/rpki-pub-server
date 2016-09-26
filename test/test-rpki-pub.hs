@@ -24,7 +24,7 @@ import qualified Data.Map as M
 import qualified Data.ByteString.Base64.Lazy as B64
 import qualified Data.ByteString.Lazy.Char8 as L
 
-import Test.QuickCheck (arbitrary, Property, quickCheck, (==>), listOf1, elements, vectorOf, suchThat)
+import Test.QuickCheck (arbitrary, Property, quickCheck, (==>), listOf1, elements, sublistOf, vectorOf, suchThat)
 import Test.QuickCheck.Monadic (PropertyM, assert, monadicIO, pick, pre, run)
 
 import qualified Util as U
@@ -52,6 +52,14 @@ mkPublishXml uri b64 = L.pack [i|
   </msg>
   |]
   where s = U.base64bs b64 :: L.ByteString
+
+
+mkWithdrawXml :: String -> Hash -> L.ByteString
+mkWithdrawXml uri (Hash h) = L.pack [i|
+  <msg type="query" version="4" xmlns="http://www.hactrn.net/uris/rpki/publication-spec/">
+    <withdraw uri="#{uri}" hash="#{h}" tag="tag"/>
+  </msg>
+  |]
 
 initialState :: IO AppState
 initialState = do
@@ -123,7 +131,33 @@ prop_publishedShouldBeListedAsync = monadicIO $ do
     assert $ exists replyAll objects
 
 
+prop_publishedAndWithdrawnShouldNotBeListed :: Property
+prop_publishedAndWithdrawnShouldNotBeListed = monadicIO $ do
+    let clientId = ClientId "default"
+
+    appState @ AppState{..} <- run initialState
+    objects <- generatePublishable
+
+    toDelete <- pick $ sublistOf objects
+
+    mapM_ (\(uri, b64 @ (Base64 _ h)) -> do
+        let xml = mkPublishXml uri b64
+        (state0, reply0) <- run $ processMessage appState clientId xml (\a -> return ())
+        assert $ reply0 == Success
+      ) objects
+
+    mapM_ (\(uri, b64 @ (Base64 _ h)) -> do
+        let xml = mkWithdrawXml uri h
+        (state0, reply0) <- run $ processMessage appState clientId xml (\a -> return ())
+        assert $ reply0 == Success
+      ) toDelete
+
+    (_, replyAll) <- run $ listObjects appState clientId
+    assert $ exists replyAll objects
+
+
 main :: IO ()
 main = do
   quickCheck prop_publishedShouldBeListed
   quickCheck prop_publishedShouldBeListedAsync
+  quickCheck prop_publishedAndWithdrawnShouldNotBeListed
