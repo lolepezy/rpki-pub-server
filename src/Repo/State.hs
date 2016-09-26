@@ -71,12 +71,21 @@ initialTRepo :: [ST.RepoObject] -> STM TRepoState
 initialTRepo repoObjects = do
   (rmap, cmap) <- (,) <$> TMap.new <*> TMMap.new
   mapM_ (\(ST.RepoObject cId u b64) -> do
-    TMap.insert (b64, cId) u rmap
-    TMMap.insert u cId cmap) repoObjects
-
+      TMap.insert (b64, cId) u rmap
+      TMMap.insert u cId cmap
+    ) repoObjects
   logMap  <- TMap.new
   counter <- newTVar 0
   return TRepoState { rMap = rmap, cMap = cmap, changeLog = (logMap, counter) }
+
+
+-- append a change set to the change log
+appendPdus :: TChangeLog -> [QueryPdu] -> STM ()
+appendPdus (changeMap, counter) pdus = do
+  c <- readTVar counter
+  TMap.insert pdus c changeMap
+  writeTVar counter (c + 1)
+
 
 -- empty the change log and return the current state
 checkpoint :: TRepoState -> STM (RepoState, [QueryPdu])
@@ -116,7 +125,7 @@ applyActionsToState appState @ AppState {
       case [ e | Wrong_ e <- actions ] of
         [] -> do
           AS.liftAdv $ do
-            updateChangeLog changeLog
+            changeLog `appendPdus` pdus
             chSync pdus
           AS.onCommit $ updateAcid actions
         _ ->
@@ -125,12 +134,6 @@ applyActionsToState appState @ AppState {
       return actions
 
     rollbackActions (RollbackException as) = return as
-
-    updateChangeLog :: TChangeLog -> STM ()
-    updateChangeLog (changeMap, counter) = do
-      c <- readTVar counter
-      TMap.insert pdus c changeMap
-      writeTVar counter (c + 1)
 
     reply actions = case [ e | Wrong_ e <- actions ] of
       [] -> Success
