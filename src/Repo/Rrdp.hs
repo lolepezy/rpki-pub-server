@@ -1,5 +1,4 @@
 {-# LANGUAGE QuasiQuotes       #-}
-{-# LANGUAGE RecordWildCards   #-}
 
 module Repo.Rrdp where
 
@@ -10,7 +9,6 @@ import           Data.Foldable
 import           Data.Maybe
 import           Data.Time.Clock
 import           Network.URI
-import qualified STMContainers.Map          as TMap
 
 import qualified Data.Dequeue               as DQ
 
@@ -36,7 +34,7 @@ import qualified XML                        as XS
 rrdpAccumulatorThread :: LG.Logger -> TChan (RepoState, ChangeSet) -> TMVar ChangeSet -> AppState -> IO ()
 rrdpAccumulatorThread logger syncChan syncV
     AppState {
-      currentState = currentState,
+      currentState = currState,
       appConfig    = AppConfig { snapshotSyncPeriod = syncPeriod }
     } = do
       t0 <- getCurrentTime
@@ -55,7 +53,7 @@ rrdpAccumulatorThread logger syncChan syncV
 
       doSyncAndWaitAgain newTime = do
         LG.info logger $ LG.msg "Getting snapshot..."
-        void $ atomically $ writeTChan syncChan <$> checkpoint currentState
+        void $ atomically $ writeTChan syncChan <$> checkpoint currState
         waitAndProcess newTime
 
       syncMinPeriod = fromInteger (toInteger syncPeriod) :: NominalDiffTime
@@ -81,12 +79,13 @@ syncFSThread logger syncChan AppState {
   } = do
   uuid <- nextRandom
   let currentSessionId = U.uuid2SessionId uuid
-  _ <- scheduleFullCleanup currentSessionId
-  _ <- scheduleOldSnapshotsCleanup currentSessionId
+  void $ scheduleFullCleanup currentSessionId
+  void $ scheduleOldSnapshotsCleanup currentSessionId
   go currentSessionId (Serial 1) (SyncFSData DQ.empty 0)
 
   where
     info_ m = LG.info logger $ LG.msg m
+    error_ m = LG.err logger $ LG.msg m
 
     go :: SessionId -> Serial -> SyncFSData -> IO ()
     go sessionId @ (SessionId sId) serial @ (Serial se) syncData = do
@@ -116,67 +115,80 @@ syncFSThread logger syncChan AppState {
         storeDir = repoDir </> U.cs sId </> show se
         notification = serializeNotification (sessionId, serial) repoUrl snapshotHash deltas
 
-        writeLastSnapshot = write_ $ L.writeFile (storeDir </> "snapshot.xml") snapshotXml
-        writeDelta        = write_ $ L.writeFile (storeDir </> "delta.xml") deltaXml
+        writeLastSnapshot = L.writeFile (storeDir </> "snapshot.xml") snapshotXml
+        writeDelta        = L.writeFile (storeDir </> "delta.xml") deltaXml
 
-        writeNotification = write_ $ do
+        writeNotification = do
           let tmp = repoDir </> "notification.xml.tmp"
           L.writeFile tmp notification
           renameFile tmp (repoDir </> "notification.xml")
 
-        write_ f = f >> return (Right ())
-        in void $ do
+        in do
           createDirectoryIfMissing True storeDir
-          void $ writeLastSnapshot `catchIOError` \e -> return $ Left $ SnapshotSyncError e
-          unless (null deltas) $
-            void $ writeDelta `catchIOError` \e -> return $ Left $ DeltaSyncError e
-          writeNotification `catchIOError` \e -> return $ Left $ NotificationSyncError e
+          writeLastSnapshot `catchIOError` \e ->
+            error_ [i|Error saving snapshot to #{storeDir}: #{e} |]
 
+          unless (null deltas) $
+            writeDelta `catchIOError` \e ->
+              error_ [i|Error saving delta to #{storeDir}: #{e} |]
+
+          writeNotification `catchIOError` \e ->
+            error_ [i|Error saving notification.xml to #{repoDir}: #{e} |]
 
       mapM_ (scheduleDeltaRemoval sessionId) deltaSerialsToDelete
 
       go sessionId (U.nextS serial) newSyncData
 
-    -- TODO Handle errors in these separate threads (log them)
+    scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $
+      doRemoval `catchIOError` \e ->
+        error_ [i|Error removing delta #{sId}/#{s}: #{e} |]
+      where
+        doRemoval = do
+          info_ [i|Scheduled removal of delta #{sId}  #{s} |]
+          threadDelay $ retainPeriod * 1000 * 1000
+          info_ $ "Removing delta " ++ U.cs sId ++ " " ++ show s
+          removeFile $ repoDir </> T.unpack sId </> show s </> "delta.xml"
 
-    scheduleDeltaRemoval (SessionId sId) (Serial s) = forkIO $ do
-      info_ [i|Scheduled removal of delta #{sId}  #{s} |]
-      threadDelay $ retainPeriod * 1000 * 1000
-      info_ $ "Removing delta " ++ U.cs sId ++ " " ++ show s
-      removeFile $ repoDir </> T.unpack sId </> show s </> "delta.xml"
+    scheduleFullCleanup (SessionId sId) = forkIO $
+      doCleanUp `catchIOError` \e ->
+        error_ [i|Error cleaning up the directory (except for the session #{sId}): #{e} |]
+      where
+        doCleanUp = do
+          info_ [i|Scheduled full cleanup except for session #{sId} |]
+          threadDelay $ retainPeriod * 1000 * 1000
+          info_ "Starting full clean up"
+          exists <- doesDirectoryExist repoDir
+          when exists $ do
+            dirs <- getDirectoryContents repoDir
+            let filterOut = [".", "..", T.unpack sId, "notification.xml"]
+            let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
+            info_ $ "Sessions to delete: " ++ show sessionsToDelete
+            mapM_ removeDirectoryRecursive sessionsToDelete
 
-    scheduleFullCleanup (SessionId sId) = forkIO $ do
-      info_ [i|Scheduled full cleanup except for session #{sId} |]
-      threadDelay $ retainPeriod * 1000 * 1000
-      info_ "Starting full clean up"
-      exists <- doesDirectoryExist repoDir
-      when exists $ do
-        dirs <- getDirectoryContents repoDir
-        let filterOut = [".", "..", T.unpack sId, "notification.xml"]
-        let sessionsToDelete = [ repoDir </> d | d <- dirs, d `notElem` filterOut]
-        info_ $ "Sessions to delete: " ++ show sessionsToDelete
-        mapM_ removeDirectoryRecursive sessionsToDelete
-
-    scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ forever $ do
-      info_ [i|Scheduled expired snapshot cleanup in session #{sId}|]
-      threadDelay $ retainPeriod * 1000 * 1000
-      let sessionDir = repoDir </> T.unpack sId
-      exists <- doesDirectoryExist sessionDir
-      when exists $ do
-        allDirs <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
-        -- don't delete the last one
-        let dirsToDelete = case mapMaybe U.maybeInteger allDirs of
-             [] -> []
-             serials -> let m = show (maximum serials) in filter (/= m) allDirs
-        mapM_ (\d -> do
-            let snapshotFile = sessionDir </> d </> "snapshot.xml"
-            ctime <- getModificationTime snapshotFile
-            now   <- getCurrentTime
-            when (diffUTCTime now ctime < (fromInteger . toInteger) retainPeriod) $ do
-              info_ $ "Deleting snapshot " ++ snapshotFile
-              snapshotExists <- doesFileExist snapshotFile
-              when snapshotExists $ removeFile snapshotFile
-          ) dirsToDelete
+    scheduleOldSnapshotsCleanup (SessionId sId) = forkIO $ forever $
+      doCleanUp `catchIOError` \e ->
+        error_ [i|Error removing snapshot #{sId}: #{e} |]
+      where
+        doCleanUp = do
+          info_ [i|Scheduled expired snapshot cleanup in session #{sId}|]
+          threadDelay $ retainPeriod * 1000 * 1000
+          let sessionDir = repoDir </> T.unpack sId
+          exists <- doesDirectoryExist sessionDir
+          when exists $ do
+            allDirs <- filter (\d -> d `notElem` [".", ".."]) <$> getDirectoryContents sessionDir
+            -- don't delete the last one
+            let dirsToDelete = case mapMaybe U.maybeInteger allDirs of
+                 [] -> []
+                 serials -> let m = show (maximum serials) in filter (/= m) allDirs
+            mapM_ (\d -> do
+                let snapshotFile = sessionDir </> d </> "snapshot.xml"
+                ctime <- getModificationTime snapshotFile
+                now   <- getCurrentTime
+                when (diffUTCTime now ctime < (fromInteger . toInteger) retainPeriod) $ do
+                  info_ $ "Deleting snapshot " ++ snapshotFile
+                  snapshotExists <- doesFileExist snapshotFile
+                  when snapshotExists $ removeFile snapshotFile
+              ) dirsToDelete
 
 
 serializeNotification :: (SessionId, Serial) -> String -> Hash -> DeltaDequeue -> U.LBS
